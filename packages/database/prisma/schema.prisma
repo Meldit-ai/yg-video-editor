@@ -40,6 +40,10 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// Videos this user has submitted. In practice always an editor's work —
+  /// an admin can submit too, but the workflow is the editor's.
+  submissions VideoSubmission[]
+
   @@index([active])
 }
 
@@ -65,9 +69,50 @@ model Campaign {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// Cut videos editors have handed in against this brief.
+  submissions VideoSubmission[]
+
   @@index([active])
   @@index([status])
   @@index([trackerCampaignId])
+}
+
+/// A video an editor has handed in against a campaign brief. The file itself
+/// lives in Hetzner object storage; this row is the record of it, and
+/// `objectKey` is the only link between the two.
+model VideoSubmission {
+  id String @id @default(cuid())
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id])
+
+  /// Who uploaded it. Kept even after the account is soft-deleted, so the
+  /// history of who handed in what stays readable.
+  editorId String
+  editor   User   @relation(fields: [editorId], references: [id])
+
+  /// The name as it was on the uploader's disk — for display only. Never used
+  /// to build `objectKey`, which is generated server-side.
+  fileName String
+  /// Key in the Hetzner bucket. Unique because it is generated per upload;
+  /// re-uploading the same file makes a new key, never overwrites one.
+  objectKey String @unique
+  /// Browser-reported MIME type, replayed as the object's Content-Type so the
+  /// presigned playback URL streams instead of downloading.
+  contentType String
+  /// Byte count measured server-side while streaming, not trusted from the
+  /// client. Int is deliberate: uploads are capped below 2 GB.
+  sizeBytes Int
+
+  /// Soft-delete flag — see User.active. A deleted submission keeps its object
+  /// in the bucket; nothing here ever removes bytes.
+  active Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([campaignId, active])
+  @@index([editorId])
 }
 
 /// Vendor contact record for the admin "Vendors" directory — the video editors

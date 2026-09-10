@@ -19,6 +19,24 @@ export class ApiError extends Error {
 }
 
 /**
+ * Thrown when an upload is cancelled — by the caller's AbortSignal, or by the
+ * browser tearing the request down. Its own type, not an ApiError: a cancelled
+ * upload is not a failure and should not be reported to the user as one.
+ */
+export class UploadCancelledError extends Error {
+  constructor() {
+    super("Upload cancelled")
+    this.name = "UploadCancelledError"
+  }
+}
+
+export interface UploadOptions {
+  /** Fraction of the body sent so far, 0–1. Called many times per second. */
+  onProgress?: (fraction: number) => void
+  signal?: AbortSignal
+}
+
+/**
  * localStorage access throws outright in some privacy modes, so every call is
  * guarded: losing the token is recoverable, a crashed render is not.
  */
@@ -60,11 +78,10 @@ function redirectToLogin(): void {
  * Nest returns { message } as a string, or as an array of strings when the
  * global ValidationPipe rejects a body.
  */
-async function readErrorMessage(response: Response): Promise<string> {
-  const fallback = response.statusText || `Request failed (${response.status})`
+function messageFromBody(body: string, fallback: string): string {
   let payload: unknown
   try {
-    payload = await response.json()
+    payload = JSON.parse(body)
   } catch {
     return fallback
   }
@@ -79,6 +96,11 @@ async function readErrorMessage(response: Response): Promise<string> {
     if (parts.length > 0) return parts.join(", ")
   }
   return fallback
+}
+
+async function readErrorMessage(response: Response): Promise<string> {
+  const fallback = response.statusText || `Request failed (${response.status})`
+  return messageFromBody(await response.text().catch(() => ""), fallback)
 }
 
 interface SendOptions {
@@ -173,6 +195,92 @@ export const api = {
    */
   async postForm<T>(path: string, body: FormData): Promise<T> {
     return parseJson<T>(await send("POST", path, { body }))
+  },
+
+  /**
+   * Multipart POST with progress, for uploads big enough that a spinner is
+   * not an honest answer.
+   *
+   * XMLHttpRequest rather than fetch: fetch still cannot report how much of a
+   * request body has gone out (the streaming-upload half of the Streams API is
+   * Chromium-only and needs HTTP/2), and a video upload with no progress bar
+   * looks identical to a hung one. Everything else matches `send`: the bearer
+   * token, the 401 bounce, and an ApiError carrying the status.
+   */
+  upload<T>(
+    path: string,
+    body: FormData,
+    options: UploadOptions = {},
+  ): Promise<T> {
+    const { onProgress, signal } = options
+
+    return new Promise<T>((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new UploadCancelledError())
+        return
+      }
+
+      const request = new XMLHttpRequest()
+      request.open("POST", `${API_PREFIX}${path}`)
+
+      const token = tokenStorage.get()
+      if (token) request.setRequestHeader("Authorization", `Bearer ${token}`)
+      // No Content-Type header: only the browser knows the multipart boundary.
+
+      request.upload.addEventListener("progress", (event) => {
+        // Not computable until the browser knows the total; reporting 0 then
+        // would make the bar jump backwards once it does.
+        if (event.lengthComputable && event.total > 0) {
+          onProgress?.(event.loaded / event.total)
+        }
+      })
+
+      request.addEventListener("load", () => {
+        const { status, responseText } = request
+
+        if (status === 401) {
+          tokenStorage.clear()
+          redirectToLogin()
+        }
+
+        if (status >= 200 && status < 300) {
+          if (responseText.length === 0) {
+            resolve(undefined as T)
+            return
+          }
+          try {
+            resolve(JSON.parse(responseText) as T)
+          } catch {
+            reject(new ApiError(status, "The server sent an unreadable reply."))
+          }
+          return
+        }
+
+        reject(
+          new ApiError(
+            status,
+            messageFromBody(
+              responseText,
+              request.statusText || `Upload failed (${status})`,
+            ),
+          ),
+        )
+      })
+
+      request.addEventListener("error", () => {
+        reject(
+          new ApiError(0, "Could not reach the server. Check your connection."),
+        )
+      })
+      request.addEventListener("timeout", () => {
+        reject(new ApiError(0, "The upload timed out."))
+      })
+      // Fires for our own abort() below, and for a navigation away mid-upload.
+      request.addEventListener("abort", () => reject(new UploadCancelledError()))
+
+      signal?.addEventListener("abort", () => request.abort(), { once: true })
+      request.send(body)
+    })
   },
 
   /**

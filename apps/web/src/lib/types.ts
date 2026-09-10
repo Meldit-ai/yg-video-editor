@@ -53,6 +53,29 @@ export interface Campaign {
 }
 
 /**
+ * A video an editor has handed in against a campaign brief. Mirrors
+ * apps/api/src/submissions/submissions.types.ts.
+ */
+export interface VideoSubmission {
+  id: string
+  campaignId: string
+  /** The uploader's own file name, for display. */
+  fileName: string
+  contentType: string
+  sizeBytes: number
+  createdAt: string
+  editorId: string
+  /** Who submitted it. An editor only ever sees their own rows. */
+  editorName: string
+  /**
+   * Time-limited URL for a <video> element. Signed per response — it is not a
+   * stable address, and it stops working at `playbackExpiresAt`.
+   */
+  playbackUrl: string
+  playbackExpiresAt: string
+}
+
+/**
  * One entry from the external tracker's active-campaign feed, flattened by the
  * API into our own casing. Names are *not* unique — two live campaigns are
  * both called "Airbnb" — so `id` is the only safe key.

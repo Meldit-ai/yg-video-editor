@@ -9,6 +9,7 @@ import {
 import { motion, useReducedMotion } from "motion/react"
 import { Link, useParams } from "react-router-dom"
 
+import { CampaignSubmissions } from "@/components/campaign-submissions"
 import { EmptyState } from "@/components/empty-state"
 import { MetaDivider, PageHeader } from "@/components/page-header"
 import { CampaignStatusBadge } from "@/components/status-badge"
@@ -157,8 +158,9 @@ function DetailSkeleton() {
 }
 
 /**
- * Read-only campaign detail, for every role. Admins still edit from the table;
- * this page deliberately offers no mutation of any kind.
+ * Campaign detail, for every role. The brief itself is read-only here — admins
+ * still edit campaigns from the table — and the one thing this page can change
+ * is the submissions panel, which is where an editor hands in a cut.
  */
 export function CampaignDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -300,6 +302,10 @@ export function CampaignDetailPage() {
         text={campaign.guidanceNote}
         placeholder="No guidance note yet."
       />
+
+      {/* Above the record metadata on purpose: handing in a cut is what an
+          editor opens this page to do, the ids at the bottom are reference. */}
+      <CampaignSubmissions campaignId={campaign.id} />
 
       <section className="grid grid-cols-2 gap-4 rounded-lg border bg-muted/20 p-4">
         <DetailField label="Created">

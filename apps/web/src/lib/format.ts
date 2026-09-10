@@ -51,8 +51,9 @@ export function initials(name: string): string {
 }
 
 /**
- * "340 KB", "1.2 MB" — the size of a file someone just picked, where an exact
- * byte count would be noise.
+ * "340 KB", "1.2 MB", "1.4 GB" — the size of a file someone just picked, where
+ * an exact byte count would be noise. Video submissions run to gigabytes, so
+ * the scale does not stop at MB.
  */
 export function fileSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "—"
@@ -60,5 +61,7 @@ export function fileSize(bytes: number): string {
   const kb = bytes / 1024
   if (kb < 1024) return `${Math.round(kb)} KB`
   const mb = kb / 1024
-  return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`
+  if (mb < 1024) return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`
+  const gb = mb / 1024
+  return `${gb.toFixed(gb < 10 ? 1 : 0)} GB`
 }

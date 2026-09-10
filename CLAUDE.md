@@ -82,6 +82,38 @@ the name; and the client sends only `trackerCampaignId` — the server resolves
 and stores `trackerCampaignName`. Sending the name yourself is a 400, because
 the global ValidationPipe uses `forbidNonWhitelisted`.
 
+**Video submissions stream; they are never buffered.** Editors upload cuts to
+Hetzner object storage (S3-compatible) from the campaign page. The file goes
+socket → API → bucket through a custom multer storage engine
+(`apps/api/src/submissions/video-upload.storage.ts`), so a 2 GB video costs
+~30 MB of memory, not 2 GB. Four things bite here:
+
+- `CampaignAccessGuard` exists because **guards run before interceptors** — it
+  404s a bad campaign id before a byte is streamed. Never move that check into
+  the handler.
+- multer signals a size limit by emitting `limit` and then **ending the stream
+  cleanly**, so a naive engine reports a truncated video as a success. The
+  engine checks both `limit` and `stream.truncated`, and deletes the object.
+- `upload.abort()` only raises a flag. The body has to be destroyed too, or the
+  multipart upload dangles and its parts are billed forever.
+- The engine's callback must fire **exactly once on every path**; multer hangs
+  the request forever if it never comes.
+
+Multer options are registered by `MulterModule.registerAsync` in
+`SubmissionsModule` (the engine needs `StorageService` injected). Those options
+are scoped to that module, which is what keeps the vendors importer on memory
+storage — do not make them global.
+
+Playback is a presigned `GetObject` URL, 6 hours, `inline`. The bucket stays
+private and needs no CORS policy: a plain `<video src>` without `crossorigin`
+is an ordinary media request. `objectKey` never leaves the server.
+
+**Node's request timeout is a wall clock, not an idle timeout.** The 5-minute
+default is measured from the first byte of a request to its last, so a healthy
+2 GB upload dies mid-stream. `apps/api/src/main.ts` raises it to 30 minutes,
+and `apps/web/vite.config.ts` raises the dev server's to match — the proxy
+answers 408 otherwise, whatever the API allows.
+
 **exceljs is CJS with `module.exports = <identifier>`,** which Node's CJS lexer
 cannot see: `import { Workbook } from "exceljs"` type-checks and then throws at
 boot. Use a default import for values (`import ExcelJS from "exceljs"`) and
@@ -90,7 +122,9 @@ to the browser.
 
 **Two `.env` files.** `packages/database/.env` is read only by the Prisma CLI;
 `apps/api/.env` is read by the API at runtime via `process.loadEnvFile()`. Keep
-`DATABASE_URL` in sync across both.
+`DATABASE_URL` in sync across both. The `HETZNER_BUCKET_*` block lives in
+`apps/api/.env` only, and is read lazily — the API still boots without it, and
+the submission routes answer 503 naming what is missing.
 
 **Version pins are deliberate.** Prisma is pinned to `^7.10.0` because npm's
 `latest` tag points at an 8.0 RC. TypeScript is pinned `~6.0.2` (TS 7 is the new
