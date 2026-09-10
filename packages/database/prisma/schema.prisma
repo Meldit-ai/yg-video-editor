@@ -72,6 +72,9 @@ model Campaign {
   /// Cut videos editors have handed in against this brief.
   submissions VideoSubmission[]
 
+  /// Duplicate-detection runs over this campaign's submissions.
+  comparisons VideoComparison[]
+
   @@index([active])
   @@index([status])
   @@index([trackerCampaignId])
@@ -111,8 +114,215 @@ model VideoSubmission {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// Comparison runs this video was an input to.
+  comparisonEntries VideoComparisonEntry[]
+  /// Compared pairs this video is the left-hand side of, and the right-hand
+  /// side of. Two named relations because a pair points at VideoSubmission
+  /// twice; which side a video lands on carries no meaning, so read both.
+  comparisonPairsA VideoComparisonPair[] @relation("ComparisonPairA")
+  comparisonPairsB VideoComparisonPair[] @relation("ComparisonPairB")
+
   @@index([campaignId, active])
   @@index([editorId])
+}
+
+/// Outcome band for one compared pair, straight from the engine's own bands:
+/// MATCH >= 90, LIKELY_MATCH 60-89.9, UNCERTAIN 25-59.9, NO_MATCH < 25. The
+/// raw score is stored beside it, but this is the field to branch on.
+enum ComparisonVerdict {
+  MATCH
+  LIKELY_MATCH
+  UNCERTAIN
+  NO_MATCH
+}
+
+/// Lifecycle of one comparison job. The first four terminal states are the
+/// engine's own; the last two are ours.
+enum ComparisonStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  /// Some videos failed to prepare — the rest were still compared.
+  PARTIAL
+  FAILED
+  /// The engine timed out, or we gave up waiting on it.
+  TIMEOUT
+  /// A newer run over the same campaign replaced this one mid-flight.
+  SUPERSEDED
+}
+
+/// One duplicate-detection run over a campaign's submissions.
+///
+/// The engine compares every input against every other, so a run is a whole
+/// campaign at a time rather than one video against the rest: N videos in,
+/// N*(N-1)/2 pairs out. A new upload starts a fresh run over the widened set
+/// and supersedes any run still in flight.
+model VideoComparison {
+  id String @id @default(cuid())
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id])
+
+  status ComparisonStatus @default(QUEUED)
+
+  /// The submission whose upload started this run, when one did. Null for a
+  /// run an admin asked for by hand. A plain id, not a relation: it is a note
+  /// about why the run happened, and must survive the submission being
+  /// withdrawn.
+  triggerSubmissionId String?
+
+  /// Live progress, mirrored from the engine on every poll so the browser can
+  /// show a real bar without talking to the engine itself. Frozen once
+  /// terminal.
+  stage     String?
+  pairsDone Int     @default(0)
+
+  /// Denormalised once the result lands, so the history list can be rendered
+  /// without loading every pair. `flaggedPairCount` counts pairs that are not
+  /// NO_MATCH — the ones a human might want to look at.
+  pairsTotal       Int     @default(0)
+  videoCount       Int     @default(0)
+  flaggedPairCount Int     @default(0)
+  engineVersion    String?
+
+  /// Why the run failed, for FAILED and TIMEOUT. Null otherwise.
+  errorMessage String?
+
+  completedAt DateTime?
+
+  /// Soft-delete flag — see User.active. Nothing flips it today: runs are an
+  /// append-only record. It exists so clearing the history stays a soft
+  /// delete, like everything else here.
+  active Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// The engine calls this run is made of, the videos that went in, and the
+  /// pairs that came out.
+  jobs    VideoComparisonJob[]
+  entries VideoComparisonEntry[]
+  pairs   VideoComparisonPair[]
+
+  @@index([campaignId, active, createdAt])
+  @@index([status])
+}
+
+/// One call to the engine inside a run.
+///
+/// The engine accepts a bounded number of URLs per request (4 today), so a
+/// campaign with more videos than that cannot be one call. The run splits
+/// them into overlapping batches chosen so that every pair of videos appears
+/// together in at least one batch — which is what keeps "every video compared
+/// with every other" true above the limit. A run is finished when all of its
+/// jobs are.
+model VideoComparisonJob {
+  id String @id @default(cuid())
+
+  comparisonId String
+  comparison   VideoComparison @relation(fields: [comparisonId], references: [id], onDelete: Cascade)
+
+  /// The engine's own job id, polled until terminal. Null when the request
+  /// was rejected outright — there is no job behind such a row, only the
+  /// error that stopped it being created.
+  jobId String?
+
+  status ComparisonStatus @default(QUEUED)
+
+  /// The submissions this call compares. Every pair among them is covered by
+  /// it; a pair may also be covered by a sibling job, and the first result to
+  /// land wins.
+  submissionIds String[]
+
+  stage        String?
+  errorMessage String?
+  completedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([comparisonId])
+  @@index([jobId])
+}
+
+/// One video handed to the engine as part of a run.
+///
+/// Kept separate from the pairs because a video can be an input and still
+/// contribute nothing: a file the engine could not download or decode comes
+/// back `ready = false` and appears in no pair at all. Without this row the
+/// UI could not tell "no duplicates" from "never actually compared".
+model VideoComparisonEntry {
+  id String @id @default(cuid())
+
+  comparisonId String
+  comparison   VideoComparison @relation(fields: [comparisonId], references: [id], onDelete: Cascade)
+
+  submissionId String
+  submission   VideoSubmission @relation(fields: [submissionId], references: [id])
+
+  /// The object-storage URL sent to the engine. Stored because the engine's
+  /// pair keys reference videos by URL-derived key, and this is what maps one
+  /// back to a submission.
+  url String
+
+  /// The engine's own key for this video (`<extractor>:<id>`), once known.
+  engineKey String?
+
+  /// Whether the engine got as far as fingerprinting it.
+  ready Boolean @default(false)
+  /// Probed from the normalised media, for the UI's duration readout.
+  durationSeconds Float?
+
+  @@unique([comparisonId, submissionId])
+  @@index([submissionId])
+}
+
+/// The comparison of two videos from one run.
+///
+/// Rows exist for every pair the engine returned, NO_MATCH included: "these
+/// two were checked and are unrelated" is a result, and dropping it would
+/// make an unchecked pair indistinguishable from a clean one.
+///
+/// Which video is `a` and which is `b` is the engine's choice, not a sorted
+/// order — `evidence` has an `a` side and a `b` side, and swapping them would
+/// leave it describing the wrong videos. Score, verdict and containment are
+/// all symmetric, so the unordered identity lives in `pairKey` instead, and
+/// that is what the unique constraint uses — two jobs reporting the same two
+/// videos in opposite orders must not produce two rows.
+model VideoComparisonPair {
+  id String @id @default(cuid())
+
+  comparisonId String
+  comparison   VideoComparison @relation(fields: [comparisonId], references: [id], onDelete: Cascade)
+
+  aSubmissionId String
+  a             VideoSubmission @relation("ComparisonPairA", fields: [aSubmissionId], references: [id])
+  bSubmissionId String
+  b             VideoSubmission @relation("ComparisonPairB", fields: [bSubmissionId], references: [id])
+
+  /// 0-100. Floored at 1.0 by the engine, so 1.0 means "no signal at all",
+  /// not "1% similar".
+  score   Float
+  verdict ComparisonVerdict
+
+  /// max(coverage_a, coverage_b) * 100 — the "is one of these lifted out of
+  /// the other?" signal. Watch it when the two durations differ a lot: a
+  /// short clip cut from a long video scores modestly but contains fully.
+  containment Float @default(0)
+
+  /// `"<lower id>|<higher id>"` — the unordered identity of this pair. The
+  /// a/b columns keep the engine's own order; this is what makes "these two
+  /// videos, in either order" a single row.
+  pairKey String
+
+  /// The engine's `evidence` block verbatim, for the detail view. Stored as
+  /// JSON rather than exploded into columns: it is diagnostic detail that the
+  /// engine is free to reshape between versions, and nothing queries into it.
+  evidence Json?
+
+  @@unique([comparisonId, pairKey])
+  @@index([aSubmissionId])
+  @@index([bSubmissionId])
 }
 
 /// Vendor contact record for the admin "Vendors" directory — the video editors

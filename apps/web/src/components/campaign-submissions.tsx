@@ -14,6 +14,11 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react"
 import { toast } from "sonner"
 
 import { useAuth } from "@/auth/auth-context"
+import {
+  CampaignComparison,
+  SubmissionCheckStrip,
+  SubmissionResultDialog,
+} from "@/components/campaign-comparison"
 import { EmptyState } from "@/components/empty-state"
 import { MetaDivider } from "@/components/page-header"
 import {
@@ -30,9 +35,11 @@ import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Skeleton } from "@/components/ui/skeleton"
 import { errorMessage, useCollection } from "@/hooks/use-collection"
+import { useComparison } from "@/hooks/use-comparison"
+import type { SubmissionCheck } from "@/hooks/use-comparison"
 import { UploadCancelledError, api } from "@/lib/api"
 import { fileSize, fullDate, relativeTime } from "@/lib/format"
-import type { VideoSubmission } from "@/lib/types"
+import type { ComparisonPair, VideoSubmission } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
 /* Mirrors apps/api/src/submissions/submissions.constants.ts. Checking here
@@ -107,6 +114,15 @@ export function CampaignSubmissions({ campaignId }: CampaignSubmissionsProps) {
   const { items, isLoading, error, refetch } = useCollection<VideoSubmission>(
     `/campaigns/${campaignId}/submissions`,
   )
+  // Both roles, but not the same payload: the API redacts an editor's copy
+  // down to the verdicts on their own videos, with the counterpart
+  // unidentified. The full matrix panel below stays admin-only.
+  const comparison = useComparison(campaignId, user !== null)
+  // Owned here rather than in the panel, which is not rendered for editors.
+  // `openPair` is the admin panel's per-pair view; `openResult` is the
+  // per-video result a card's status strip opens.
+  const [openPair, setOpenPair] = useState<ComparisonPair | null>(null)
+  const [openResult, setOpenResult] = useState<VideoSubmission | null>(null)
 
   const [upload, setUpload] = useState<UploadState | null>(null)
   const [isDragging, setDragging] = useState(false)
@@ -187,6 +203,9 @@ export function CampaignSubmissions({ campaignId }: CampaignSubmissionsProps) {
       // Refetch rather than append: the row comes back with a freshly signed
       // playback URL and the server's own idea of the file name and size.
       await refetch()
+      // The API starts the duplicate check *after* answering this request, so
+      // there is no id to wait for — only a window in which one appears.
+      comparison.watchForNewRun()
       toast.success(`Submitted ${file.name}`)
     } catch (caught) {
       if (caught instanceof UploadCancelledError) {
@@ -393,6 +412,8 @@ export function CampaignSubmissions({ campaignId }: CampaignSubmissionsProps) {
                   src={src}
                   isUnplayable={unplayable.has(src)}
                   showEditor={isAdmin}
+                  check={comparison.checkFor(submission.id)}
+                  onOpenResult={() => setOpenResult(submission)}
                   onRemove={() => setPendingDelete(submission)}
                   onPlaybackError={() =>
                     handlePlaybackError(submission.playbackExpiresAt, src)
@@ -403,6 +424,25 @@ export function CampaignSubmissions({ campaignId }: CampaignSubmissionsProps) {
           })}
         </ul>
       )}
+
+      {/* Below the list on purpose: the videos are what this panel is about,
+          and the check is a verdict on them. Admin-only: it names every
+          editor's cuts side by side, which a card's own strip never does. */}
+      {isAdmin && (
+        <CampaignComparison
+          state={comparison}
+          canRun={items.length >= 2}
+          openPair={openPair}
+          onOpenPair={setOpenPair}
+        />
+      )}
+
+      <SubmissionResultDialog
+        submission={openResult}
+        check={openResult === null ? null : comparison.checkFor(openResult.id)}
+        state={comparison}
+        onClose={() => setOpenResult(null)}
+      />
 
       <AlertDialog
         open={pendingDelete !== null}
@@ -492,6 +532,8 @@ function SubmissionCard({
   src,
   isUnplayable,
   showEditor,
+  check,
+  onOpenResult,
   onRemove,
   onPlaybackError,
 }: {
@@ -499,6 +541,8 @@ function SubmissionCard({
   src: string
   isUnplayable: boolean
   showEditor: boolean
+  check: SubmissionCheck
+  onOpenResult: () => void
   onRemove: () => void
   onPlaybackError: () => void
 }) {
@@ -571,6 +615,10 @@ function SubmissionCard({
           <Trash2Icon className="size-3.5" />
         </Button>
       </div>
+
+      {/* The verdict sits under the card's own facts, so a video and what the
+          check says about it are read together rather than looked up. */}
+      <SubmissionCheckStrip check={check} onOpenResult={onOpenResult} />
     </div>
   )
 }

@@ -104,9 +104,61 @@ Multer options are registered by `MulterModule.registerAsync` in
 are scoped to that module, which is what keeps the vendors importer on memory
 storage — do not make them global.
 
-Playback is a presigned `GetObject` URL, 6 hours, `inline`. The bucket stays
-private and needs no CORS policy: a plain `<video src>` without `crossorigin`
-is an ordinary media request. `objectKey` never leaves the server.
+Playback is a presigned `GetObject` URL, 6 hours, `inline`. No CORS policy is
+needed: a plain `<video src>` without `crossorigin` is an ordinary media
+request. `objectKey` never leaves the server.
+
+The bucket denies *listing* (403) but grants public read on individual
+objects — an unsigned GET on a submitted video answers 200. So the signature
+is not what keeps a video private; the random-uuid key is. Verified, and the
+comparison engine depends on it (see below).
+
+**Duplicate detection is per-campaign, not per-video.** After every upload the
+API asks the comparison engine (`COMPARISON_ENGINE_URL`, default
+`http://127.0.0.1:8080`) to compare *every* active submission on the campaign
+against every other. A new upload starts a fresh run and marks any run still
+in flight `SUPERSEDED`.
+
+**The engine takes at most 4 URLs per call** (`COMPARISON_ENGINE_MAX_URLS`) —
+a 5th is answered with HTTP 422, not a truncated job, so a campaign past four
+videos fails outright unless it is split. `planBatches` cuts the videos into
+blocks of `maxUrls / 2` and submits every *pair of blocks*, which is what
+keeps every pair covered: a run is therefore several `VideoComparisonJob`
+rows, and finishes when all of them do. Batches overlap on purpose, so pairs
+are merged with `skipDuplicates` on `pairKey` (the unordered {a,b} identity)
+rather than replaced — the a/b columns keep the engine's order because
+`evidence` has an A side and a B side.
+
+Results are role-scoped in `ComparisonsService.toDto`, not by hiding UI: an
+editor sees the verdict on **their own** videos with the counterpart redacted
+to "Another submission", no evidence and no groups; an admin sees the whole
+matrix. The history list and the manual re-run are `@Roles(Role.ADMIN)`.
+Five more things bite:
+
+- **The engine is handed the plain, unsigned object URL**
+  (`StorageService.publicObjectUrl`), not a presigned one. It derives a
+  video's cache identity by hashing the URL, so a signature — which carries a
+  timestamp — would make the same file look new on every run. This only works
+  because the bucket grants public read on *objects* (an unsigned GET on a
+  submitted video answers 200; listing the bucket is still 403). Presigned
+  playback URLs therefore buy unguessability, not confidentiality — the keys
+  are random uuids, and that is what actually protects a submitted video.
+  Turning object-read off would break this integration.
+- **`pairs[].a`/`b` are engine keys, never URLs.** Getting from a pair back to
+  a submission takes two hops: key → URL via `result.videos[]`, URL →
+  submission via our own `VideoComparisonEntry` rows. `resolveResult` is the
+  only place that does it.
+- **A per-video status of `cached` is a success**, not a failure. From the
+  second run of a campaign onwards most videos come back cached, and reading
+  only `ready` as usable reports a healthy re-run as "these could not be
+  read". Appearing in a pair also promotes a video to ready, whatever its
+  status string said.
+- **`result` is null until the job is terminal.** Polling lives in
+  `ComparisonsService`, in-process and one poller per `VideoComparisonJob`, so
+  the browser polls our database rather than the engine; calls left
+  non-terminal are resumed on boot.
+- **`score` is floored at 1.0.** A 1.0 means "no signal at all", not "1%
+  similar". Branch on `verdict`, not on the number.
 
 **Node's request timeout is a wall clock, not an idle timeout.** The 5-minute
 default is measured from the first byte of a request to its last, so a healthy

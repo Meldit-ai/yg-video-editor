@@ -114,6 +114,29 @@ export class StorageService {
   }
 
   /**
+   * The object's plain, unsigned address — `https://<bucket>.<host>/<key>`.
+   *
+   * This is what the comparison engine is handed, and it is deliberately NOT
+   * a presigned URL. The engine derives a video's cache identity by hashing
+   * the URL it was given, so a signature (which carries a timestamp and
+   * expires) would make the same file look like a new video on every run and
+   * defeat its cache. The signed form is for browsers; this one is for a
+   * server-side consumer that reaches the bucket with its own credentials.
+   *
+   * Virtual-hosted style, matching the SDK's own addressing — see the class
+   * comment for why path style is not used.
+   */
+  publicObjectUrl(key: string): string {
+    const { config } = this.connection();
+    const host = new URL(config.endpoint).host;
+    // Encoded per segment: the slashes are path structure, not data. Keys are
+    // generated server-side from a uuid so nothing here needs escaping today,
+    // but a key format that changes must not silently produce a broken URL.
+    const path = key.split("/").map(encodeURIComponent).join("/");
+    return `https://${config.bucket}.${host}/${path}`;
+  }
+
+  /**
    * Deletes an object. Only ever used to clean up after a failed upload —
    * submissions are soft-deleted and keep their bytes.
    *

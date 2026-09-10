@@ -75,6 +75,147 @@ export interface VideoSubmission {
   playbackExpiresAt: string
 }
 
+/* Duplicate detection — mirrors apps/api/src/comparisons/comparisons.types.ts. */
+
+/**
+ * Outcome band for one compared pair. The engine's own bands: MATCH ≥ 90,
+ * LIKELY_MATCH 60–89.9, UNCERTAIN 25–59.9, NO_MATCH < 25. This is the field
+ * to branch on — `score` is the number behind it.
+ */
+export type ComparisonVerdict =
+  | "MATCH"
+  | "LIKELY_MATCH"
+  | "UNCERTAIN"
+  | "NO_MATCH"
+
+export type ComparisonStatus =
+  | "QUEUED"
+  | "RUNNING"
+  | "SUCCEEDED"
+  /** Some videos failed to prepare; the rest were still compared. */
+  | "PARTIAL"
+  | "FAILED"
+  | "TIMEOUT"
+  /** A newer run replaced this one mid-flight. */
+  | "SUPERSEDED"
+
+/** Statuses that are still moving, and so worth polling for. */
+export const LIVE_COMPARISON_STATUSES = [
+  "QUEUED",
+  "RUNNING",
+] as const satisfies readonly ComparisonStatus[]
+
+export function isComparisonLive(status: ComparisonStatus): boolean {
+  return (LIVE_COMPARISON_STATUSES as readonly string[]).includes(status)
+}
+
+/** One video that went into a run. */
+export interface ComparisonVideo {
+  submissionId: string
+  fileName: string
+  editorId: string
+  editorName: string
+  /**
+   * When it was handed in. File names are not unique — the same cut
+   * re-uploaded keeps its name — so this is what tells two otherwise
+   * identical match rows apart.
+   */
+  submittedAt: string
+  /**
+   * Whether the engine got far enough to fingerprint it. False means this
+   * video is in no pair at all — which is not "matched nothing", and must not
+   * be shown as such.
+   */
+  ready: boolean
+  durationSeconds: number | null
+}
+
+/**
+ * The engine's `evidence` block. Every field is optional because it is
+ * diagnostic detail the engine is free to reshape between versions — it is
+ * read to explain a score, never to decide anything.
+ */
+export interface ComparisonEvidence {
+  tiers?: {
+    /** "pdq_sw" (hashes) or "sscd" (neural). */
+    winning_tier?: string
+    pdq_sw?: number | null
+    sscd?: number | null
+    audio_boost?: number | null
+  }
+  visual?: {
+    /** Where the match is, in seconds. Empty means nothing aligned at all. */
+    matched_spans?: { a_start: number; a_end: number; b_start: number; b_end: number }[]
+    coverage?: { a?: number; b?: number }
+    /** Mean per-frame similarity along the path. */
+    quality?: number
+    offset_s?: number
+    speed_ratio?: number
+    /** Matched under horizontal mirroring — a common re-upload evasion. */
+    flipped?: boolean
+    /** Matched spans are out of order: a re-cut. */
+    reordered?: boolean
+  }
+  audio?: {
+    verdict?: string
+    conf?: number
+    boost_applied?: boolean
+    reason?: string
+  }
+  mpeg7?: { status?: string; reason?: string }
+  composite?: { winning_combo?: string[] }
+}
+
+/** The comparison of two videos from one run. */
+export interface ComparisonPair {
+  id: string
+  aSubmissionId: string
+  bSubmissionId: string
+  /** 0–100, floored at 1 by the engine. 1 means "no signal", not "1%". */
+  score: number
+  verdict: ComparisonVerdict
+  /** 0–100. High with a modest score means one video is cut from the other. */
+  containment: number
+  evidence: ComparisonEvidence | null
+}
+
+/**
+ * A cluster of related videos. Transitive: A–B and B–C put all three together
+ * even if A–C was never strong, because that is usually one cut circulating
+ * in three edits. `minScore` is the weakest edge holding it together.
+ */
+export interface ComparisonGroup {
+  submissionIds: string[]
+  minScore: number
+  maxScore: number
+}
+
+/** A run without its pairs — enough for a history row. */
+export interface ComparisonSummary {
+  id: string
+  campaignId: string
+  status: ComparisonStatus
+  stage: string | null
+  pairsDone: number
+  pairsTotal: number
+  videoCount: number
+  /** Pairs that came back as anything other than NO_MATCH. */
+  flaggedPairCount: number
+  engineVersion: string | null
+  errorMessage: string | null
+  triggerSubmissionId: string | null
+  createdAt: string
+  completedAt: string | null
+}
+
+/** A run with everything it produced. */
+export interface Comparison extends ComparisonSummary {
+  videos: ComparisonVideo[]
+  /** Every pair, NO_MATCH included, strongest first. */
+  pairs: ComparisonPair[]
+  groups: ComparisonGroup[]
+}
+
 /**
  * One entry from the external tracker's active-campaign feed, flattened by the
  * API into our own casing. Names are *not* unique — two live campaigns are

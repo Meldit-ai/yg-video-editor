@@ -3,6 +3,7 @@ import { Role } from "@repo/database";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
 import type { PrismaService } from "../prisma/prisma.service.js";
+import type { ComparisonsService } from "../comparisons/comparisons.service.js";
 import type { StorageService } from "../storage/storage.service.js";
 import { SubmissionsService } from "./submissions.service.js";
 
@@ -25,6 +26,11 @@ const storageMock = {
 };
 
 const storage = storageMock as unknown as StorageService;
+
+/** The duplicate check is fire-and-forget, so the spy is only ever asserted
+ *  on for whether it was called — never awaited. */
+const comparisonsMock = { triggerAfterUpload: vi.fn() };
+const comparisons = comparisonsMock as unknown as ComparisonsService;
 
 const row = (overrides: Record<string, unknown> = {}) => ({
   id: "sub_1",
@@ -74,7 +80,7 @@ describe("SubmissionsService", () => {
     storageMock.presignPlaybackUrl.mockResolvedValue(
       "https://signed.example/v",
     );
-    service = new SubmissionsService(prisma, storage);
+    service = new SubmissionsService(prisma, storage, comparisons);
   });
 
   describe("findAll", () => {

@@ -5,17 +5,18 @@ import {
   type CanActivate,
   type ExecutionContext,
 } from "@nestjs/common";
-import { CampaignsService } from "../../campaigns/campaigns.service.js";
+import { CampaignsService } from "../campaigns.service.js";
 import type { AuthenticatedUser } from "../../auth/auth.types.js";
 
-interface SubmissionRequest {
+interface CampaignScopedRequest {
   user?: AuthenticatedUser;
   params?: Record<string, string>;
 }
 
 /**
  * Proves the campaign in the URL exists and is one this caller may see, before
- * the route runs.
+ * the route runs. For every controller nested under
+ * `campaigns/:campaignId/...` — submissions and comparisons today.
  *
  * A guard rather than a check inside the handler, and this is the whole point:
  * guards run before interceptors, so the campaign is validated *before*
@@ -32,7 +33,9 @@ export class CampaignAccessGuard implements CanActivate {
   constructor(private readonly campaigns: CampaignsService) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const request = context.switchToHttp().getRequest<SubmissionRequest>();
+    const request = context
+      .switchToHttp()
+      .getRequest<CampaignScopedRequest>();
 
     // The global JwtAuthGuard runs first and has already attached the user;
     // this keeps the type honest rather than asserting it.

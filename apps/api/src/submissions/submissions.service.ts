@@ -6,6 +6,7 @@ import {
 } from "@nestjs/common";
 import { Role, type Prisma } from "@repo/database";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
+import { ComparisonsService } from "../comparisons/comparisons.service.js";
 import { PrismaService } from "../prisma/prisma.service.js";
 import {
   PLAYBACK_URL_TTL_SECONDS,
@@ -48,6 +49,7 @@ export class SubmissionsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
+    private readonly comparisons: ComparisonsService,
   ) {}
 
   /** Submissions on a campaign, newest first, scoped to what this user sees. */
@@ -112,6 +114,13 @@ export class SubmissionsService {
       await this.storage.removeObject(file.objectKey);
       throw error;
     }
+
+    // Fire and forget, deliberately. The comparison runs against every video
+    // on the campaign — this one and the ones already there — and takes
+    // minutes; awaiting it would hold the upload response open past every
+    // timeout between here and the browser. It never throws, so an engine
+    // that is down cannot turn a stored video into a failed submission.
+    this.comparisons.triggerAfterUpload(campaignId, row.id);
 
     // Outside the try: the row exists by now, and a failure to sign a URL must
     // not delete a video that was successfully submitted.

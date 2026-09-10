@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils"
-import type { CampaignStatus, Role } from "@/lib/types"
+import type { CampaignStatus, ComparisonVerdict, Role } from "@/lib/types"
 
 /**
  * A small filled dot. Colour carries the state, so the label beside it stays
@@ -63,6 +63,67 @@ export function RoleBadge({
       {isAdmin ? "Admin" : "Editor"}
     </span>
   )
+}
+
+/**
+ * How each verdict band is worded and coloured.
+ *
+ * Deliberately not a red/green pass-fail: only MATCH is stated as fact.
+ * The engine's own middle bands mean "a person should look", and dressing
+ * them up as duplicates would get editors accused on a 62.
+ */
+const VERDICT: Record<
+  ComparisonVerdict,
+  { label: string; short: string; pill: string; dot: string }
+> = {
+  MATCH: {
+    label: "Duplicate",
+    short: "Duplicate",
+    pill: "border-destructive/30 bg-destructive/10 text-destructive",
+    dot: "bg-destructive",
+  },
+  LIKELY_MATCH: {
+    label: "Likely duplicate",
+    short: "Likely",
+    pill: "border-warning/30 bg-warning/10 text-warning",
+    dot: "bg-warning",
+  },
+  UNCERTAIN: {
+    label: "Needs review",
+    short: "Review",
+    pill: "border-border bg-muted/50 text-foreground",
+    dot: "bg-muted-foreground",
+  },
+  NO_MATCH: {
+    label: "Unrelated",
+    short: "Unrelated",
+    pill: "border-border bg-muted/40 text-muted-foreground",
+    dot: "bg-muted-foreground",
+  },
+}
+
+/** Result of one compared pair. `compact` drops to the one-word form. */
+export function ComparisonVerdictBadge({
+  verdict,
+  compact = false,
+  className,
+}: {
+  verdict: ComparisonVerdict
+  compact?: boolean
+  className?: string
+}) {
+  const style = VERDICT[verdict]
+  return (
+    <span className={cn(PILL, style.pill, className)}>
+      <Dot className={style.dot} />
+      {compact ? style.short : style.label}
+    </span>
+  )
+}
+
+/** The same wording, unstyled — for sentences and tooltips. */
+export function verdictLabel(verdict: ComparisonVerdict): string {
+  return VERDICT[verdict].label
 }
 
 /**

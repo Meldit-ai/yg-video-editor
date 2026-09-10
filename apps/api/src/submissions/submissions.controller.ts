@@ -11,7 +11,7 @@ import {
 import { FileInterceptor } from "@nestjs/platform-express";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { CurrentUser } from "../auth/decorators/current-user.decorator.js";
-import { CampaignAccessGuard } from "./guards/campaign-access.guard.js";
+import { CampaignAccessGuard } from "../campaigns/guards/campaign-access.guard.js";
 import { UploadSizeGuard } from "./guards/upload-size.guard.js";
 import { VIDEO_FIELD_NAME } from "./submissions.constants.js";
 import { SubmissionsService } from "./submissions.service.js";
