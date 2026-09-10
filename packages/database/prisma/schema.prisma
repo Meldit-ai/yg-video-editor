@@ -1,0 +1,97 @@
+generator client {
+  provider               = "prisma-client"
+  output                 = "../src/generated"
+  runtime                = "nodejs"
+  moduleFormat           = "cjs"
+  generatedFileExtension = "ts"
+  importFileExtension    = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  ADMIN
+  EDITOR
+}
+
+enum CampaignStatus {
+  ACTIVE
+  INACTIVE
+}
+
+/// Application user. Authentication is mobile + OTP; there are no passwords.
+model User {
+  id     String @id @default(cuid())
+  mobile String @unique
+  name   String
+  role   Role   @default(EDITOR)
+
+  /// What this editor charges per video, in rupees. Editors only: an ADMIN
+  /// row is always null, and promoting an editor clears it. Null also means
+  /// "not agreed yet" — an editor can be onboarded before the rate is set.
+  rateCard Float?
+
+  /// Soft-delete flag. `false` means deleted: hidden from every list and
+  /// blocked from logging in. Rows are never physically removed.
+  active Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([active])
+}
+
+model Campaign {
+  id           String         @id @default(cuid())
+  title        String
+  briefText    String?
+  guidanceNote String?
+  /// Business state of the campaign, independent of `active`.
+  status       CampaignStatus @default(ACTIVE)
+
+  /// Campaign in the external tracker (api-tracker.meldit.ai). The id is what
+  /// the tracker knows; the name is denormalised alongside it so the list stays
+  /// readable when a campaign drops out of the tracker's active feed, and
+  /// because tracker names are NOT unique — the id is the only real key.
+  trackerCampaignId   String?
+  trackerCampaignName String?
+
+  /// Soft-delete flag — see User.active. Distinct from `status`: a campaign
+  /// can be INACTIVE (paused) while still active (not deleted).
+  active Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([active])
+  @@index([status])
+  @@index([trackerCampaignId])
+}
+
+/// Vendor contact record for the admin "Vendors" directory — the video editors
+/// and other suppliers the team works with. A directory entry, NOT a login
+/// account: accounts are `User` rows, and `Role.EDITOR` there is unrelated to
+/// this model.
+model Vendor {
+  id    String  @id @default(cuid())
+  name  String
+  email String?
+  /// Digits with an optional leading "+", exactly as the API validates it
+  /// (separators stripped). Unique: the key bulk import dedupes on.
+  phoneNumber String  @unique
+  instagram   String?
+  twitter     String?
+  linkedin    String?
+
+  /// Visible status toggle — NOT the soft-delete flag used by User/Campaign.
+  /// Inactive vendors stay listed and can be re-activated; there is no
+  /// DELETE endpoint for vendors.
+  active Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([active])
+}
