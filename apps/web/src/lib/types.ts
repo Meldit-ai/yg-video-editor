@@ -283,3 +283,29 @@ export interface VendorImportResult {
   /** Every non-blank row, in sheet order. */
   rows: VendorImportRowResult[]
 }
+
+/* ---------------------------------------------------------- dashboard */
+
+/** Mirrors apps/api/src/dashboard/dashboard.types.ts. */
+export interface DashboardCampaignStat {
+  campaignId: string
+  campaignTitle: string
+  videos: number
+  duplicates: number
+}
+
+export interface EditorDashboardStats {
+  videosUploaded: number
+  duplicateCount: number
+  /** Null when nothing has been compared yet — not the same as zero. */
+  averageDuplicationScore: number | null
+  campaignsContributed: number
+  /**
+   * Null when no rate is agreed. Render that as "Rate not set", never as 0:
+   * nothing models approval or payment, so this is the value of work
+   * submitted rather than money owed.
+   */
+  estimatedEarnings: number | null
+  rateCard: number | null
+  perCampaign: DashboardCampaignStat[]
+}

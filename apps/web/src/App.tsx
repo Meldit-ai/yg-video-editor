@@ -17,6 +17,7 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { CampaignDetailPage } from "@/pages/campaign-detail-page"
+import { EditorDashboardPage } from "@/pages/editor-dashboard-page"
 import { CampaignsPage } from "@/pages/campaigns-page"
 import { LoginPage } from "@/pages/login-page"
 import { NoAccessPage } from "@/pages/no-access-page"
@@ -52,7 +53,9 @@ const router = createBrowserRouter([
       {
         element: <AppLayout />,
         children: [
-          { index: true, element: <Navigate to="/campaigns" replace /> },
+          { index: true, element: <Navigate to="/dashboard" replace /> },
+          // Open to both roles: it only ever shows the caller's own work.
+          { path: "dashboard", element: <EditorDashboardPage /> },
           { path: "no-access", element: <NoAccessPage /> },
           // Campaigns are open to every signed-in user: the page itself picks
           // the admin table or the editor browse grid, and the API scopes what
