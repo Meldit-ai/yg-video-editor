@@ -190,6 +190,11 @@ export class SubmissionsService {
       createdAt: row.createdAt,
       editorId: row.editorId,
       editorName: row.editor.name,
+      duplicationScore: row.duplicationScore,
+      averageDuplicationScore: row.averageDuplicationScore,
+      topMatchSubmissionId: row.topMatchSubmissionId,
+      overThreshold: row.overThreshold,
+      duplicationCheckedAt: row.duplicationCheckedAt,
       playbackUrl,
       // Signed just now, so the client can tell how long the URL it holds is
       // good for and refetch instead of showing a broken player.

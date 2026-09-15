@@ -46,6 +46,8 @@ export interface Campaign {
    * out of it — this keeps the label readable when that happens.
    */
   trackerCampaignName: string | null
+  /** Accepted duplication %. A submission at or above it is flagged, not blocked. */
+  duplicationThreshold: number
   /** Soft-delete flag: false means the campaign was deleted. */
   active: boolean
   createdAt: string
@@ -67,6 +69,16 @@ export interface VideoSubmission {
   editorId: string
   /** Who submitted it. An editor only ever sees their own rows. */
   editorName: string
+  /**
+   * Duplication roll-up. Null means not compared yet; 0 means compared and
+   * matched nothing — the two are different states, so do not coalesce them.
+   */
+  duplicationScore: number | null
+  averageDuplicationScore: number | null
+  topMatchSubmissionId: string | null
+  /** Whether it met the campaign's threshold when the run closed. */
+  overThreshold: boolean
+  duplicationCheckedAt: string | null
   /**
    * Time-limited URL for a <video> element. Signed per response — it is not a
    * stable address, and it stops working at `playbackExpiresAt`.

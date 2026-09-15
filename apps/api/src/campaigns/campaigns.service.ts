@@ -107,6 +107,10 @@ export class CampaignsService {
         trackerCampaignId,
         trackerCampaignName,
         status: input.status ?? CampaignStatus.ACTIVE,
+        // Omitted leaves the column default (90) in place.
+        ...(input.duplicationThreshold === undefined
+          ? {}
+          : { duplicationThreshold: input.duplicationThreshold }),
       },
     });
   }
@@ -134,6 +138,9 @@ export class CampaignsService {
           : await this.resolveTrackerName(input.trackerCampaignId);
     }
     if (input.status !== undefined) data.status = input.status;
+    if (input.duplicationThreshold !== undefined) {
+      data.duplicationThreshold = input.duplicationThreshold;
+    }
     if (input.active !== undefined) data.active = input.active;
 
     return this.prisma.client.campaign.update({ where: { id }, data });

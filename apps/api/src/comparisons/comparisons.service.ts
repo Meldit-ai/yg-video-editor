@@ -1065,7 +1065,127 @@ async function closeRunIfDone(
     },
   });
 
+  await applyDuplicationScores(tx, run.campaignId, comparisonId);
+
   logger.log(
     `Comparison ${comparisonId} finished as ${status} with ${pairs.length} pair(s) from ${run.jobs.length} engine call(s)`,
   );
+}
+
+/**
+ * Rolls a finished run's pairs up into one score per submission.
+ *
+ * The run stores pairs; a feed, a threshold and a dashboard all need a single
+ * number per video, which is what this writes.
+ *
+ * `duplicationScore` is the MAX rather than the mean: a video 95% identical to
+ * one other and unrelated to eight more averages out to ~12% and would read as
+ * clean. The mean is kept alongside it for display only.
+ *
+ * Every submission that went into the run is written, including those that
+ * appear in no pair — they score 0 ("checked, matched nothing"), which is not
+ * the same as the null they carried before ("never checked").
+ */
+async function applyDuplicationScores(
+  tx: Prisma.TransactionClient,
+  campaignId: string,
+  comparisonId: string,
+): Promise<void> {
+  const [campaign, entries, pairs] = await Promise.all([
+    tx.campaign.findUnique({
+      where: { id: campaignId },
+      select: { duplicationThreshold: true },
+    }),
+    tx.videoComparisonEntry.findMany({
+      where: { comparisonId },
+      select: { submissionId: true },
+    }),
+    tx.videoComparisonPair.findMany({
+      where: { comparisonId },
+      select: { aSubmissionId: true, bSubmissionId: true, score: true },
+    }),
+  ]);
+  if (campaign === null || entries.length === 0) return;
+
+  const scores = rollUpScores(
+    entries.map((entry) => entry.submissionId),
+    pairs,
+    campaign.duplicationThreshold,
+  );
+
+  const checkedAt = new Date();
+  for (const score of scores) {
+    await tx.videoSubmission.update({
+      where: { id: score.submissionId },
+      data: {
+        duplicationScore: score.duplicationScore,
+        averageDuplicationScore: score.averageDuplicationScore,
+        topMatchSubmissionId: score.topMatchSubmissionId,
+        overThreshold: score.overThreshold,
+        duplicationCheckedAt: checkedAt,
+      },
+    });
+  }
+}
+
+export interface SubmissionDuplicationScore {
+  submissionId: string;
+  duplicationScore: number;
+  averageDuplicationScore: number;
+  topMatchSubmissionId: string | null;
+  overThreshold: boolean;
+}
+
+/**
+ * The per-submission roll-up, as a pure function over one run's pairs.
+ *
+ * Split out from the write so the arithmetic — which is the part with edge
+ * cases — can be tested without a database.
+ */
+export function rollUpScores(
+  submissionIds: readonly string[],
+  pairs: readonly {
+    aSubmissionId: string;
+    bSubmissionId: string;
+    score: number;
+  }[],
+  threshold: number,
+): SubmissionDuplicationScore[] {
+  const totals = new Map<
+    string,
+    { max: number; sum: number; count: number; topMatchId: string | null }
+  >();
+  for (const submissionId of submissionIds) {
+    totals.set(submissionId, { max: 0, sum: 0, count: 0, topMatchId: null });
+  }
+
+  // A pair contributes to both of its sides, so walk each one twice.
+  for (const pair of pairs) {
+    for (const [selfId, otherId] of [
+      [pair.aSubmissionId, pair.bSubmissionId],
+      [pair.bSubmissionId, pair.aSubmissionId],
+    ] as const) {
+      const row = totals.get(selfId);
+      if (row === undefined) continue;
+      row.sum += pair.score;
+      row.count += 1;
+      if (pair.score > row.max) {
+        row.max = pair.score;
+        row.topMatchId = otherId;
+      }
+    }
+  }
+
+  return [...totals].map(([submissionId, row]) => ({
+    submissionId,
+    duplicationScore: round1(row.max),
+    averageDuplicationScore: row.count === 0 ? 0 : round1(row.sum / row.count),
+    topMatchSubmissionId: row.topMatchId,
+    overThreshold: row.max >= threshold,
+  }));
+}
+
+/** One decimal, matching how the engine reports scores. */
+function round1(value: number): number {
+  return Math.round(value * 10) / 10;
 }

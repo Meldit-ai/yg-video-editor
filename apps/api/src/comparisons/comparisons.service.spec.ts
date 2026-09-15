@@ -11,6 +11,7 @@ import {
   pairKeyOf,
   planBatches,
   resolveResult,
+  rollUpScores,
 } from "./comparisons.service.js";
 import type { ComparisonPairDto } from "./comparisons.types.js";
 
@@ -242,6 +243,68 @@ describe("planBatches", () => {
 describe("pairKeyOf", () => {
   it("is the same key whichever order the engine reported the two in", () => {
     expect(pairKeyOf("sub_b", "sub_a")).toBe(pairKeyOf("sub_a", "sub_b"));
+  });
+});
+
+describe("rollUpScores", () => {
+  const pair = (a: string, b: string, score: number) => ({
+    aSubmissionId: a,
+    bSubmissionId: b,
+    score,
+  });
+  const byId = (rows: ReturnType<typeof rollUpScores>, id: string) =>
+    rows.find((row) => row.submissionId === id)!;
+
+  it("takes the worst match, not the average", () => {
+    // 95 against one video, nothing against three others: the mean would be
+    // ~24 and read as clean, but this video IS a duplicate of that one.
+    const rows = rollUpScores(
+      ["a", "b", "c", "d"],
+      [pair("a", "b", 95), pair("a", "c", 1), pair("a", "d", 1)],
+      90,
+    );
+    expect(byId(rows, "a").duplicationScore).toBe(95);
+    expect(byId(rows, "a").averageDuplicationScore).toBe(32.3);
+    expect(byId(rows, "a").overThreshold).toBe(true);
+  });
+
+  it("scores a submission that matched nothing as 0, not null", () => {
+    const rows = rollUpScores(["a", "b"], [pair("a", "b", 1)], 90);
+    expect(byId(rows, "a").duplicationScore).toBe(1);
+    expect(byId(rows, "a").overThreshold).toBe(false);
+  });
+
+  it("scores a submission that appears in no pair at all", () => {
+    const rows = rollUpScores(["a", "b"], [], 90);
+    expect(byId(rows, "a")).toMatchObject({
+      duplicationScore: 0,
+      averageDuplicationScore: 0,
+      topMatchSubmissionId: null,
+      overThreshold: false,
+    });
+  });
+
+  it("names the submission behind the worst score on both sides", () => {
+    const rows = rollUpScores(
+      ["a", "b", "c"],
+      [pair("a", "b", 40), pair("a", "c", 88)],
+      90,
+    );
+    expect(byId(rows, "a").topMatchSubmissionId).toBe("c");
+    // b and c each saw only a, so that is what they point back at.
+    expect(byId(rows, "b").topMatchSubmissionId).toBe("a");
+    expect(byId(rows, "c").topMatchSubmissionId).toBe("a");
+  });
+
+  it("flags a score exactly on the threshold", () => {
+    const rows = rollUpScores(["a", "b"], [pair("a", "b", 20)], 20);
+    expect(byId(rows, "a").overThreshold).toBe(true);
+  });
+
+  it("ignores pairs naming a submission outside the run", () => {
+    const rows = rollUpScores(["a"], [pair("a", "ghost", 70)], 90);
+    expect(rows).toHaveLength(1);
+    expect(byId(rows, "a").duplicationScore).toBe(70);
   });
 });
 
