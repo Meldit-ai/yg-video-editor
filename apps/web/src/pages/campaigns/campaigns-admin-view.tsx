@@ -106,6 +106,13 @@ const campaignFormSchema = z.object({
   // the select deals in ids, and the server reads null as "clear this field".
   trackerCampaignId: z.string().nullable(),
   status: z.enum(CAMPAIGN_STATUSES),
+  // Plain number, not z.coerce: a schema whose input and output types differ
+  // widens useForm's generic and breaks inference for every other field. The
+  // field's onChange converts the input's string instead.
+  duplicationThreshold: z
+    .number({ message: "Enter a number between 0 and 100" })
+    .min(0, "Must be between 0 and 100")
+    .max(100, "Must be between 0 and 100"),
 })
 
 type CampaignFormValues = z.infer<typeof campaignFormSchema>
@@ -116,6 +123,8 @@ const BLANK_CAMPAIGN: CampaignFormValues = {
   guidanceNote: "",
   trackerCampaignId: null,
   status: "ACTIVE",
+  // Matches the column default, so a new campaign flags what MATCH already does.
+  duplicationThreshold: 90,
 }
 
 type StatusFilter = "all" | CampaignStatus
@@ -292,6 +301,7 @@ export function CampaignsAdminView() {
       guidanceNote: campaign.guidanceNote ?? "",
       trackerCampaignId: campaign.trackerCampaignId,
       status: campaign.status,
+      duplicationThreshold: campaign.duplicationThreshold,
     })
     setFormOpen(true)
   }
@@ -335,6 +345,7 @@ export function CampaignsAdminView() {
       guidanceNote: values.guidanceNote,
       trackerCampaignId: values.trackerCampaignId,
       status: values.status,
+      duplicationThreshold: values.duplicationThreshold,
     }
 
     try {
@@ -856,6 +867,55 @@ export function CampaignsAdminView() {
                     )}
                   />
                 </div>
+
+                <FormField
+                  control={form.control}
+                  name="duplicationThreshold"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel className="text-[13px]">
+                        Accepted duplication
+                      </FormLabel>
+                      <FormControl>
+                        <div className="relative w-[180px]">
+                          <Input
+                            type="number"
+                            min={0}
+                            max={100}
+                            step={1}
+                            inputMode="numeric"
+                            className="numeric pr-7"
+                            {...field}
+                            // The input yields a string; the form holds a
+                            // number. An empty box becomes NaN, which zod
+                            // reports rather than silently sending 0.
+                            onChange={(event) =>
+                              field.onChange(
+                                event.target.value === ""
+                                  ? Number.NaN
+                                  : event.target.valueAsNumber,
+                              )
+                            }
+                            value={
+                              Number.isNaN(field.value) ? "" : field.value
+                            }
+                          />
+                          <span
+                            aria-hidden
+                            className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-[13px] text-muted-foreground"
+                          >
+                            %
+                          </span>
+                        </div>
+                      </FormControl>
+                      <FormDescription className="text-[12px]">
+                        Videos scoring at or above this are flagged as
+                        duplicates. Uploads are never blocked.
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
               </FormSection>
 
               <FormSection label="Tracking">
