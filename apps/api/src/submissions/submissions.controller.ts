@@ -3,12 +3,14 @@ import {
   Delete,
   Get,
   Param,
+  Query,
   Post,
   UploadedFile,
   UseGuards,
   UseInterceptors,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
+import { ListSubmissionsQueryDto } from "./dto/list-submissions-query.dto.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { CurrentUser } from "../auth/decorators/current-user.decorator.js";
 import { CampaignAccessGuard } from "../campaigns/guards/campaign-access.guard.js";
@@ -33,13 +35,20 @@ import type { UploadedVideo, VideoSubmissionDto } from "./submissions.types.js";
 export class SubmissionsController {
   constructor(private readonly submissions: SubmissionsService) {}
 
-  /** GET /api/campaigns/:campaignId/submissions — newest first. */
+  /**
+   * GET /api/campaigns/:campaignId/submissions — newest first by default.
+   *
+   * `?sort=original` is the campaign feed's ordering (least duplicated at the
+   * top); `?flagged=true` narrows it to videos that met the campaign's
+   * accepted-duplication level.
+   */
   @Get()
   findAll(
     @Param("campaignId") campaignId: string,
     @CurrentUser() user: AuthenticatedUser,
+    @Query() query: ListSubmissionsQueryDto,
   ): Promise<VideoSubmissionDto[]> {
-    return this.submissions.findAll(campaignId, user);
+    return this.submissions.findAll(campaignId, user, query);
   }
 
   /**

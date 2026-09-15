@@ -35,3 +35,16 @@ export const trimStringToNull = ({ value }: TransformFnParams): unknown => {
  */
 export const normalizePhoneNumber = ({ value }: TransformFnParams): unknown =>
   typeof value === "string" ? value.trim().replace(/[\s\-.()]/g, "") : value;
+
+/**
+ * Reads a query-string boolean.
+ *
+ * `?flagged=true` arrives as the string "true", which @IsBoolean() rejects.
+ * Anything that is not a recognised boolean is passed through untouched so
+ * the validator reports it rather than silently reading as false.
+ */
+export const toBoolean = ({ value }: TransformFnParams): unknown => {
+  if (value === "true" || value === true) return true;
+  if (value === "false" || value === false) return false;
+  return value;
+};

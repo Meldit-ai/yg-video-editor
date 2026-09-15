@@ -9,6 +9,8 @@ import {
 import { motion, useReducedMotion } from "motion/react"
 import { Link, useParams } from "react-router-dom"
 
+import { useAuth } from "@/auth/auth-context"
+import { CampaignFeed } from "@/components/campaign-feed"
 import { CampaignSubmissions } from "@/components/campaign-submissions"
 import { EmptyState } from "@/components/empty-state"
 import { MetaDivider, PageHeader } from "@/components/page-header"
@@ -169,6 +171,9 @@ export function CampaignDetailPage() {
   const [attempt, setAttempt] = useState(0)
   const [state, setState] = useState<LoadState>({ status: "loading" })
   const reduceMotion = useReducedMotion()
+  const { user } = useAuth()
+  // Presentation only — the API scopes what each role can actually read.
+  const isAdmin = user?.role === "ADMIN"
 
   useEffect(() => {
     if (id === undefined || id.length === 0) {
@@ -306,6 +311,11 @@ export function CampaignDetailPage() {
       {/* Above the record metadata on purpose: handing in a cut is what an
           editor opens this page to do, the ids at the bottom are reference. */}
       <CampaignSubmissions campaignId={campaign.id} />
+
+      {/* Admin-only: the whole campaign's videos ranked by originality, with
+          the selection the vendor share reads from. Editors see only their
+          own cuts, so a feed of everyone's would be empty and misleading. */}
+      {isAdmin && <CampaignFeed campaign={campaign} />}
 
       <section className="grid grid-cols-2 gap-4 rounded-lg border bg-muted/20 p-4">
         <DetailField label="Created">

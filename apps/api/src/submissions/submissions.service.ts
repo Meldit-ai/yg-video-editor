@@ -5,6 +5,10 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { Role, type Prisma } from "@repo/database";
+import type {
+  ListSubmissionsQueryDto,
+  SubmissionSort,
+} from "./dto/list-submissions-query.dto.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { ComparisonsService } from "../comparisons/comparisons.service.js";
 import { PrismaService } from "../prisma/prisma.service.js";
@@ -56,11 +60,15 @@ export class SubmissionsService {
   async findAll(
     campaignId: string,
     user: AuthenticatedUser,
+    query: ListSubmissionsQueryDto = {},
   ): Promise<VideoSubmissionDto[]> {
     const rows = await this.prisma.client.videoSubmission.findMany({
-      where: this.scope(campaignId, user),
+      where: {
+        ...this.scope(campaignId, user),
+        ...(query.flagged === undefined ? {} : { overThreshold: query.flagged }),
+      },
       include: WITH_EDITOR,
-      orderBy: { createdAt: "desc" },
+      orderBy: orderFor(query.sort),
     });
 
     // Signing is a local HMAC, not a network call, so signing a page of them
@@ -200,5 +208,31 @@ export class SubmissionsService {
       // good for and refetch instead of showing a broken player.
       playbackExpiresAt: new Date(Date.now() + PLAYBACK_URL_TTL_SECONDS * 1000),
     };
+  }
+}
+
+/**
+ * Prisma ordering for one of the feed's sorts.
+ *
+ * `nulls: "last"` is the load-bearing part: a video no run has reached yet has
+ * a null score, and Postgres sorts nulls first ascending. Without it the feed
+ * would open with unchecked videos presented as the most original ones.
+ */
+function orderFor(
+  sort: SubmissionSort | undefined,
+): Prisma.VideoSubmissionOrderByWithRelationInput[] {
+  switch (sort) {
+    case "original":
+      return [
+        { duplicationScore: { sort: "asc", nulls: "last" } },
+        { createdAt: "desc" },
+      ];
+    case "duplicate":
+      return [
+        { duplicationScore: { sort: "desc", nulls: "last" } },
+        { createdAt: "desc" },
+      ];
+    default:
+      return [{ createdAt: "desc" }];
   }
 }
