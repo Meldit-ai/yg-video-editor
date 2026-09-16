@@ -268,7 +268,22 @@ export function CampaignDetailPage() {
       transition={{ duration: reduceMotion ? 0 : 0.15, ease: "easeOut" }}
       className="flex w-full max-w-3xl flex-col gap-4"
     >
-      <BackLink />
+      {/* The feed sits on this row rather than below the page: a campaign can
+          carry hundreds of videos, and a link under them is a link nobody
+          reaches. Admin-only — an editor is never shown other people's cuts. */}
+      <div className="flex items-center justify-between gap-3">
+        <BackLink />
+        {isAdmin && (
+          <Link
+            to={`/campaigns/${campaign.id}/feed`}
+            className="group -mr-1.5 inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[13px] text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
+          >
+            <LayersIcon className="size-3.5" />
+            Campaign feed
+            <ArrowRightIcon className="size-3.5 transition-transform group-hover:translate-x-0.5" />
+          </Link>
+        )}
+      </div>
 
       <PageHeader
         title={campaign.title}
@@ -312,26 +327,6 @@ export function CampaignDetailPage() {
       {/* Above the record metadata on purpose: handing in a cut is what an
           editor opens this page to do, the ids at the bottom are reference. */}
       <CampaignSubmissions campaignId={campaign.id} />
-
-      {/* Admin-only: the feed is every editor's cuts ranked by originality,
-          which an editor is never shown. It is its own page rather than a
-          section here — it is a place to work, not a thing to scroll past. */}
-      {isAdmin && (
-        <Link
-          to={`/campaigns/${campaign.id}/feed`}
-          className="group flex items-center gap-3 rounded-lg border bg-muted/20 p-4 transition-colors outline-none hover:bg-muted/40 focus-visible:ring-[3px] focus-visible:ring-ring/50"
-        >
-          <LayersIcon className="size-4 shrink-0 text-muted-foreground" />
-          <span className="min-w-0 flex-1">
-            <span className="block text-[14px] font-medium">Campaign feed</span>
-            <span className="block text-[12px] text-muted-foreground">
-              Every video on this campaign, least duplicated first. Flags at{" "}
-              <span className="numeric">{campaign.duplicationThreshold}%</span>.
-            </span>
-          </span>
-          <ArrowRightIcon className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
-        </Link>
-      )}
 
       <section className="grid grid-cols-2 gap-4 rounded-lg border bg-muted/20 p-4">
         <DetailField label="Created">
