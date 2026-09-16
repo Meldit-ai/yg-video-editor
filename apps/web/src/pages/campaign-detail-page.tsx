@@ -2,6 +2,8 @@ import { useEffect, useState } from "react"
 import type { ReactNode } from "react"
 import {
   ArrowLeftIcon,
+  ArrowRightIcon,
+  LayersIcon,
   RotateCwIcon,
   SearchXIcon,
   TriangleAlertIcon,
@@ -10,7 +12,6 @@ import { motion, useReducedMotion } from "motion/react"
 import { Link, useParams } from "react-router-dom"
 
 import { useAuth } from "@/auth/auth-context"
-import { CampaignFeed } from "@/components/campaign-feed"
 import { CampaignSubmissions } from "@/components/campaign-submissions"
 import { EmptyState } from "@/components/empty-state"
 import { MetaDivider, PageHeader } from "@/components/page-header"
@@ -312,10 +313,25 @@ export function CampaignDetailPage() {
           editor opens this page to do, the ids at the bottom are reference. */}
       <CampaignSubmissions campaignId={campaign.id} />
 
-      {/* Admin-only: the whole campaign's videos ranked by originality, with
-          the selection the vendor share reads from. Editors see only their
-          own cuts, so a feed of everyone's would be empty and misleading. */}
-      {isAdmin && <CampaignFeed campaign={campaign} />}
+      {/* Admin-only: the feed is every editor's cuts ranked by originality,
+          which an editor is never shown. It is its own page rather than a
+          section here — it is a place to work, not a thing to scroll past. */}
+      {isAdmin && (
+        <Link
+          to={`/campaigns/${campaign.id}/feed`}
+          className="group flex items-center gap-3 rounded-lg border bg-muted/20 p-4 transition-colors outline-none hover:bg-muted/40 focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        >
+          <LayersIcon className="size-4 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1">
+            <span className="block text-[14px] font-medium">Campaign feed</span>
+            <span className="block text-[12px] text-muted-foreground">
+              Every video on this campaign, least duplicated first. Flags at{" "}
+              <span className="numeric">{campaign.duplicationThreshold}%</span>.
+            </span>
+          </span>
+          <ArrowRightIcon className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+        </Link>
+      )}
 
       <section className="grid grid-cols-2 gap-4 rounded-lg border bg-muted/20 p-4">
         <DetailField label="Created">
