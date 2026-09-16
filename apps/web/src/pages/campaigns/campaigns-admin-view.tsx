@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import type { ReactNode } from "react"
 import { zodResolver } from "@hookform/resolvers/zod"
 import {
+  ArrowUpRightIcon,
   ClapperboardIcon,
   FilterXIcon,
   Loader2Icon,
@@ -13,6 +14,7 @@ import {
   TriangleAlertIcon,
 } from "lucide-react"
 import { motion, useReducedMotion } from "motion/react"
+import { Link } from "react-router-dom"
 import { useForm } from "react-hook-form"
 import { toast } from "sonner"
 import { z } from "zod"
@@ -795,10 +797,21 @@ export function CampaignsAdminView() {
                   <Trash2Icon />
                   Delete
                 </Button>
-                <Button size="sm" onClick={() => openEdit(sheetCampaign)}>
-                  <PencilIcon />
-                  Edit campaign
-                </Button>
+                <div className="flex items-center gap-2">
+                  {/* The sheet is a summary; the feed, the submitted videos
+                      and the duplicate check all live on the campaign page,
+                      which nothing else here linked to. */}
+                  <Button asChild variant="outline" size="sm">
+                    <Link to={`/campaigns/${sheetCampaign.id}`}>
+                      <ArrowUpRightIcon />
+                      Open campaign
+                    </Link>
+                  </Button>
+                  <Button size="sm" onClick={() => openEdit(sheetCampaign)}>
+                    <PencilIcon />
+                    Edit campaign
+                  </Button>
+                </div>
               </SheetFooter>
             </>
           )}
