@@ -154,7 +154,9 @@ function MatchRow({ match }: { match: CrossPlatformMatch }) {
         <span className="text-muted-foreground">↔</span>
         <span className="text-[13px]">@{match.username}</span>
         <span className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[11px] tracking-wide uppercase">
-          identical file
+          {match.contentHash === null
+            ? `${match.frameShare}% of frames`
+            : "identical file"}
         </span>
       </div>
 
@@ -173,6 +175,15 @@ function MatchRow({ match }: { match: CrossPlatformMatch }) {
           link={match.permalink}
         />
       </div>
+
+      {match.contentHash === null && (
+        // Worth saying which kind of match this is: an identical file is
+        // certain, while shared frames mean the same footage re-encoded.
+        <p className="mt-2 text-[12px] text-muted-foreground">
+          The same footage, re-encoded — the files differ but the picture does
+          not.
+        </p>
+      )}
 
       {match.origin === "UNKNOWN" && (
         // Said plainly rather than defaulting to one side: without a post date

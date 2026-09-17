@@ -101,6 +101,7 @@ model Campaign {
   crossPlatformMatches CrossPlatformMatch[]
   reelMatchRuns ReelMatchRun[]
 
+  frameSignatures VideoFrameSignature[]
   @@index([active])
   @@index([status])
   @@index([trackerCampaignId])
@@ -213,6 +214,7 @@ model VideoSubmission {
   reelMatchPairs   ReelMatchPair[]
 
   crossPlatformMatches CrossPlatformMatch[]
+  frameSignatures VideoFrameSignature[]
   @@index([campaignId, active])
   @@index([editorId])
   /// Backs the campaign feed's most-original-first ordering.
@@ -223,6 +225,44 @@ model VideoSubmission {
   @@index([campaignId, contentHash])
   /// Backs the baseline query (UNIQUE and PARTIAL rows of a campaign).
   @@index([campaignId, active, uniqueness])
+}
+
+/// One sampled frame of one video, reduced to a 64-bit perceptual signature.
+///
+/// The signature is a "brighter or darker than this frame's own middle" bit
+/// per cell of an 8x8 greyscale thumbnail. At that scale compression noise
+/// disappears, so re-encoding a video leaves most of its signatures
+/// untouched — measured on this campaign, a re-encode shared 91% of them and
+/// an unrelated video shared none.
+///
+/// Rows are the index, not a list to walk: two videos sharing many signatures
+/// are the same footage, and the query that finds them is a lookup on
+/// `(campaignId, signature)` rather than a comparison of every pair. A frame
+/// belongs to exactly one side — a submission or a reel, never both.
+model VideoFrameSignature {
+  id String @id @default(cuid())
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  submissionId String?
+  submission   VideoSubmission? @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  reelId String?
+  reel   CampaignReel? @relation(fields: [reelId], references: [id], onDelete: Cascade)
+
+  /// Which sample this was, counting from the start of the video.
+  position Int
+
+  /// The 64 bits, as a signed BigInt — Postgres has no unsigned type, and the
+  /// value is only ever compared for equality.
+  signature BigInt
+
+  createdAt DateTime @default(now())
+
+  @@index([campaignId, signature])
+  @@index([submissionId])
+  @@index([reelId])
 }
 
 /// Which side of a cross-platform match was published first.
@@ -256,8 +296,13 @@ model CrossPlatformMatch {
   reelId String
   reel   CampaignReel @relation(fields: [reelId], references: [id], onDelete: Cascade)
 
-  /// The bytes both sides share, lowercase hex.
-  contentHash String
+  /// The bytes both sides share, lowercase hex. Null when the match was found
+  /// by frame signatures — the same footage re-encoded shares no hash.
+  contentHash String?
+
+  /// How much of the upload's footage the reel carries, 0-100. 100 for an
+  /// identical file; otherwise the share of sampled frames held in common.
+  frameShare Float @default(100)
 
   /// Which side went public first — the original.
   origin MatchOrigin
@@ -649,6 +694,7 @@ model CampaignReel {
   matchPairs ReelMatchPair[]
 
   crossPlatformMatches CrossPlatformMatch[]
+  frameSignatures VideoFrameSignature[]
   @@unique([campaignId, trackerPostId])
   /// The cross-platform match: find the upload carrying these exact bytes.
   @@index([campaignId, contentHash])

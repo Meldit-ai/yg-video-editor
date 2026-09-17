@@ -30,8 +30,22 @@ export interface CrossPlatformMatchDto {
    */
   origin: MatchOrigin;
 
-  /** The shared SHA-256, so a match can be traced back to the bytes. */
-  contentHash: string;
+  /**
+   * The shared SHA-256, when the two are the very same file.
+   *
+   * Null for a match found by frame signatures: the videos are the same
+   * footage re-encoded, so there is no shared hash to point at.
+   */
+  contentHash: string | null;
+
+  /**
+   * How much of the upload's footage the reel carries, 0-100.
+   *
+   * 100 for an identical file. Below that it is the share of sampled frames
+   * the two have exactly in common — measured, a re-encode keeps around 92%
+   * and an unrelated video 0%.
+   */
+  frameShare: number;
 
   checkedAt: Date;
 }

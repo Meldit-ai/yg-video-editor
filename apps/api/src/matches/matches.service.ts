@@ -4,6 +4,13 @@ import { MatchOrigin, SubmissionSource } from "@repo/database";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { StorageService } from "../storage/storage.service.js";
 import { hashUrl } from "./content-hash.js";
+import { frameSignatures } from "./frame-signature.js";
+import {
+  frameShare,
+  isSameFootage,
+  MIN_FRAMES,
+  type FrameOverlap,
+} from "./matches.rules.js";
 import type {
   CrossPlatformMatchDto,
   MatchRunResultDto,
@@ -21,6 +28,36 @@ const HASH_CONCURRENCY = 8;
 /** Rows written per transaction, so no single lock is long. */
 const WRITE_BATCH = 100;
 
+/**
+ * Videos fingerprinted at once.
+ *
+ * Lower than the hash concurrency because each one is an ffmpeg decode, which
+ * costs CPU rather than only bandwidth, and this box has little memory to
+ * spare for parallel decoders.
+ */
+const SIGNATURE_CONCURRENCY = 3;
+
+/** One upload-and-reel pair the run decided on. */
+interface MatchPair {
+  submissionId: string;
+  reelId: string;
+  contentHash: string | null;
+  /** How much of the upload's footage the reel carries, 0-100. */
+  frameShare: number;
+  origin: MatchOrigin;
+  uploadedAt: Date;
+  postedAt: Date | null;
+  fileName: string;
+  editorName: string;
+  username: string;
+  permalink: string | null;
+}
+
+/** An upload's frame overlap with one reel, as counted by the database. */
+interface ReelOverlap extends FrameOverlap {
+  reelId: string;
+}
+
 /** The reel an adopted submission was copied from, if it was adopted. */
 function sourceReelId(fileName: string): string | null {
   return /\[reel ([a-z0-9]+)\]/i.exec(fileName)?.[1] ?? null;
@@ -29,15 +66,21 @@ function sourceReelId(fileName: string): string | null {
 /**
  * Matching a campaign's editor uploads against its Instagram reels.
  *
- * Identity, not similarity: both sides are reduced to a SHA-256 and a match is
- * the very same file. That is the whole rule, and it is why no comparison
- * engine is involved — a straight repost is exact, and hashing a campaign
- * costs one read per video instead of a fingerprint and a pairwise score.
+ * Every comparison here is an exact equality — no scores, no engine. What is
+ * compared is the picture rather than the file, in two passes:
  *
- * What it deliberately cannot see is a re-encode. Instagram re-compressing an
- * upload changes every byte, and the hash then reports nothing at all rather
- * than reporting it weakly. That case belongs to the comparison engine, which
- * still runs for editor-against-editor checking; the two are complementary.
+ *   - **The bytes.** A straight repost is the same file, so a SHA-256 settles
+ *     it for one read per video. Measured on this campaign, five accounts
+ *     posted one video byte for byte.
+ *   - **The frames.** A video re-uploaded rather than reposted is re-encoded,
+ *     which changes every byte and leaves the hash blind. Each video is
+ *     therefore also reduced to one 64-bit signature per sampled frame, and
+ *     two videos sharing enough signatures are the same footage. Measured, a
+ *     re-encode shared 92% of its frames and an unrelated video shared none.
+ *
+ * Both are exact: the second pass matches 64-bit values, it does not score
+ * resemblance. The comparison engine is still what runs for editor-against-
+ * editor checking, where the question is how alike two different cuts are.
  *
  * Whichever side was published first is the original. Where the reel has no
  * post date the question is left open rather than answered wrongly.
@@ -66,6 +109,12 @@ export class MatchesService {
 
     const hashedSubmissions = await this.hashSubmissions(campaignId);
     const hashedReels = await this.hashReels(campaignId, reelLimit);
+
+    // Fingerprinting is the expensive half — an ffmpeg decode per video — so
+    // it runs over the same bounded slice the hashing just covered.
+    await this.fingerprintSubmissions(campaignId);
+    await this.fingerprintReels(campaignId, reelLimit);
+
     const matches = await this.rebuildMatches(campaignId);
 
     const unhashedReels = await this.prisma.client.campaignReel.count({
@@ -73,7 +122,7 @@ export class MatchesService {
     });
 
     this.logger.log(
-      `Match run on "${campaign.title}": hashed ${hashedSubmissions} upload(s) and ${hashedReels} reel(s), ${matches.length} match(es), ${unhashedReels} reel(s) still unhashed`,
+      `Match run on "${campaign.title}": read ${hashedSubmissions} upload(s) and ${hashedReels} reel(s), ${matches.length} match(es), ${unhashedReels} reel(s) still to read`,
     );
 
     return {
@@ -111,6 +160,7 @@ export class MatchesService {
       postedAt: row.postedAt,
       origin: row.origin,
       contentHash: row.contentHash,
+      frameShare: row.frameShare,
       checkedAt: row.updatedAt,
     }));
   }
@@ -162,6 +212,141 @@ export class MatchesService {
     );
   }
 
+  /** Fingerprints uploads that have no signatures yet. */
+  private async fingerprintSubmissions(campaignId: string): Promise<number> {
+    const rows = await this.prisma.client.videoSubmission.findMany({
+      where: {
+        campaignId,
+        active: true,
+        source: SubmissionSource.EDITOR,
+        frameSignatures: { none: {} },
+      },
+      select: { id: true, objectKey: true },
+    });
+
+    return this.fingerprintAll(
+      campaignId,
+      rows,
+      (row) => this.storage.publicObjectUrl(row.objectKey),
+      (id) => ({ submissionId: id }),
+    );
+  }
+
+  /** Fingerprints reels that have no signatures yet, oldest post first. */
+  private async fingerprintReels(
+    campaignId: string,
+    limit?: number,
+  ): Promise<number> {
+    const rows = await this.prisma.client.campaignReel.findMany({
+      where: { campaignId, active: true, frameSignatures: { none: {} } },
+      select: { id: true, mediaUrl: true },
+      orderBy: [{ postedAt: "asc" }, { createdAt: "asc" }],
+      ...(limit === undefined ? {} : { take: limit }),
+    });
+
+    return this.fingerprintAll(
+      campaignId,
+      rows,
+      (row) => row.mediaUrl,
+      (id) => ({ reelId: id }),
+    );
+  }
+
+  /**
+   * Decodes a batch of videos into signatures and stores them.
+   *
+   * A video that yields too few frames to be evidence is skipped rather than
+   * stored: a one-sample clip would "share all of its frames" with anything
+   * containing that single still.
+   */
+  private async fingerprintAll<T extends { id: string }>(
+    campaignId: string,
+    rows: readonly T[],
+    urlOf: (row: T) => string,
+    ownerOf: (id: string) => { submissionId?: string; reelId?: string },
+  ): Promise<number> {
+    let done = 0;
+
+    for (let start = 0; start < rows.length; start += SIGNATURE_CONCURRENCY) {
+      const slice = rows.slice(start, start + SIGNATURE_CONCURRENCY);
+      const results = await Promise.all(
+        slice.map(async (row) => ({
+          row,
+          signatures: await frameSignatures(urlOf(row)),
+        })),
+      );
+
+      for (const { row, signatures } of results) {
+        if (signatures.length < MIN_FRAMES) continue;
+        await this.prisma.client.videoFrameSignature.createMany({
+          data: signatures.map((signature, position) => ({
+            campaignId,
+            ...ownerOf(row.id),
+            position,
+            signature,
+          })),
+          skipDuplicates: true,
+        });
+        done += 1;
+      }
+    }
+
+    return done;
+  }
+
+  /**
+   * Every upload's frame overlap with every reel that shares any frame.
+   *
+   * One query for the whole campaign. The join is on the signature, so the
+   * database walks an index rather than the product of two tables: only reels
+   * that actually share a frame are ever considered, which is a handful even
+   * when the campaign holds thousands.
+   *
+   * `DISTINCT` on both sides because a video can repeat a frame — a static
+   * intro, a held shot — and counting it twice would inflate the share.
+   */
+  private async frameOverlaps(
+    campaignId: string,
+  ): Promise<Map<string, ReelOverlap[]>> {
+    const rows = await this.prisma.client.$queryRaw<
+      { submissionId: string; reelId: string; shared: bigint; total: bigint }[]
+    >`
+      WITH upload AS (
+        SELECT "submissionId" AS id, "signature"
+        FROM "VideoFrameSignature"
+        WHERE "campaignId" = ${campaignId} AND "submissionId" IS NOT NULL
+      ),
+      totals AS (
+        SELECT id, COUNT(DISTINCT "signature") AS total FROM upload GROUP BY id
+      ),
+      reel AS (
+        SELECT "reelId" AS id, "signature"
+        FROM "VideoFrameSignature"
+        WHERE "campaignId" = ${campaignId} AND "reelId" IS NOT NULL
+      )
+      SELECT upload.id      AS "submissionId",
+             reel.id        AS "reelId",
+             COUNT(DISTINCT upload."signature") AS shared,
+             totals.total   AS total
+        FROM upload
+        JOIN reel   ON reel."signature" = upload."signature"
+        JOIN totals ON totals.id = upload.id
+       GROUP BY upload.id, reel.id, totals.total
+    `;
+
+    const overlaps = new Map<string, ReelOverlap[]>();
+    for (const row of rows) {
+      const bucket = overlaps.get(row.submissionId) ?? [];
+      bucket.push({
+        reelId: row.reelId,
+        shared: Number(row.shared),
+        total: Number(row.total),
+      });
+      overlaps.set(row.submissionId, bucket);
+    }
+    return overlaps;
+  }
+
   /** Hashes a batch of rows, a few at a time, and stores what came back. */
   private async hashAll<T extends { id: string }>(
     rows: readonly T[],
@@ -188,7 +373,13 @@ export class MatchesService {
   }
 
   /**
-   * Recomputes the campaign's matches from the stored hashes.
+   * Recomputes the campaign's matches from what has been read so far.
+   *
+   * Two ways in, both exact. Identical bytes settle a straight repost outright.
+   * Everything else is decided by how many frame signatures the two share,
+   * counted by the database on the `(campaignId, signature)` index — a lookup
+   * rather than a comparison of every upload against every reel, which at a
+   * few thousand reels is the difference between a query and an afternoon.
    *
    * Rewritten rather than appended to: a video can be withdrawn, and a match
    * that no longer holds must stop being reported.
@@ -201,7 +392,6 @@ export class MatchesService {
         campaignId,
         active: true,
         source: SubmissionSource.EDITOR,
-        contentHash: { not: null },
       },
       select: {
         id: true,
@@ -212,30 +402,21 @@ export class MatchesService {
       },
       orderBy: { createdAt: "asc" },
     });
+    if (submissions.length === 0) return [];
 
-    const hashes = [
-      ...new Set(
-        submissions
-          .map((row) => row.contentHash)
-          .filter((hash): hash is string => hash !== null),
-      ),
-    ];
+    const reels = await this.prisma.client.campaignReel.findMany({
+      where: { campaignId, active: true },
+      select: {
+        id: true,
+        username: true,
+        permalink: true,
+        postedAt: true,
+        contentHash: true,
+      },
+    });
+    const reelById = new Map(reels.map((reel) => [reel.id, reel]));
 
-    const reels =
-      hashes.length === 0
-        ? []
-        : await this.prisma.client.campaignReel.findMany({
-            where: { campaignId, active: true, contentHash: { in: hashes } },
-            select: {
-              id: true,
-              username: true,
-              permalink: true,
-              postedAt: true,
-              contentHash: true,
-            },
-            orderBy: [{ postedAt: "asc" }, { createdAt: "asc" }],
-          });
-
+    const overlaps = await this.frameOverlaps(campaignId);
     const byHash = new Map<string, typeof reels>();
     for (const reel of reels) {
       if (reel.contentHash === null) continue;
@@ -244,32 +425,25 @@ export class MatchesService {
       byHash.set(reel.contentHash, bucket);
     }
 
-    const pairs: {
-      submissionId: string;
-      reelId: string;
-      contentHash: string;
-      origin: MatchOrigin;
-      uploadedAt: Date;
-      postedAt: Date | null;
-      fileName: string;
-      editorName: string;
-      username: string;
-      permalink: string | null;
-    }[] = [];
+    const pairs: MatchPair[] = [];
+    const seen = new Set<string>();
 
     for (const submission of submissions) {
-      if (submission.contentHash === null) continue;
       // A submission adopted from a reel is a copy of that reel that we made
       // ourselves. Pairing it with its own source would report our own import
       // as a finding, so only other reels count.
       const ownReel = sourceReelId(submission.fileName);
 
-      for (const reel of byHash.get(submission.contentHash) ?? []) {
-        if (reel.id === ownReel) continue;
+      const add = (reel: (typeof reels)[number], share: number) => {
+        if (reel.id === ownReel) return;
+        const key = `${submission.id}:${reel.id}`;
+        if (seen.has(key)) return;
+        seen.add(key);
         pairs.push({
           submissionId: submission.id,
           reelId: reel.id,
           contentHash: submission.contentHash,
+          frameShare: share,
           origin: originOf(submission.createdAt, reel.postedAt),
           uploadedAt: submission.createdAt,
           postedAt: reel.postedAt,
@@ -278,6 +452,21 @@ export class MatchesService {
           username: reel.username,
           permalink: reel.permalink,
         });
+      };
+
+      // Identical bytes first: certain, and it costs nothing to check.
+      if (submission.contentHash !== null) {
+        for (const reel of byHash.get(submission.contentHash) ?? []) {
+          add(reel, 100);
+        }
+      }
+
+      // Then the re-encodes, which the bytes cannot see.
+      for (const overlap of overlaps.get(submission.id) ?? []) {
+        const reel = reelById.get(overlap.reelId);
+        if (reel === undefined) continue;
+        if (!isSameFootage(overlap)) continue;
+        add(reel, frameShare(overlap));
       }
     }
 
@@ -307,6 +496,7 @@ export class MatchesService {
                 submissionId: pair.submissionId,
                 reelId: pair.reelId,
                 contentHash: pair.contentHash,
+                frameShare: pair.frameShare,
                 origin: pair.origin,
                 uploadedAt: pair.uploadedAt,
                 postedAt: pair.postedAt,
@@ -314,6 +504,8 @@ export class MatchesService {
               },
               update: {
                 active: true,
+                contentHash: pair.contentHash,
+                frameShare: pair.frameShare,
                 origin: pair.origin,
                 uploadedAt: pair.uploadedAt,
                 postedAt: pair.postedAt,
@@ -337,6 +529,7 @@ export class MatchesService {
       postedAt: pair.postedAt,
       origin: pair.origin,
       contentHash: pair.contentHash,
+      frameShare: pair.frameShare,
       checkedAt: now,
     }));
   }

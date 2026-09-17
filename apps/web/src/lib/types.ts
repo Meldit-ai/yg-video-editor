@@ -510,7 +510,10 @@ export interface CrossPlatformMatch {
   postedAt: string | null
   /** Which side was published first. UNKNOWN when the reel has no date. */
   origin: MatchOrigin
-  contentHash: string
+  /** Null when the match came from frame signatures rather than the bytes. */
+  contentHash: string | null
+  /** How much of the upload's footage the reel carries, 0-100. */
+  frameShare: number
   checkedAt: string
 }
 
