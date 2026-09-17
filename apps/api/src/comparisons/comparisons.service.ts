@@ -68,6 +68,16 @@ const MAX_WAIT_MS = 30 * 60 * 1000;
  */
 const MAX_POLL_FAILURES = 8;
 
+/**
+ * How many times one batch waits for room in the engine's queue.
+ *
+ * The queue drains as jobs finish, and a job is minutes rather than seconds,
+ * so these are long waits by design — the alternative is dropping the batch
+ * and leaving its pairs uncompared.
+ */
+const SUBMIT_ATTEMPTS = 60;
+const SUBMIT_BACKOFF_MS = 5_000;
+
 /** The row shape every read selects: the roster and pairs come along. */
 const WITH_DETAIL = {
   entries: {
@@ -110,6 +120,11 @@ interface PendingEntry {
 /** Pairs the engine will produce from n videos — every combination of two. */
 function pairCount(videoCount: number): number {
   return (videoCount * (videoCount - 1)) / 2;
+}
+
+/** Whether a refusal was the engine's queue being full, rather than a fault. */
+function isEngineBusy(message: string): boolean {
+  return message.includes("engine_busy") || message.includes("queue is full");
 }
 
 function messageOf(caught: unknown): string {
@@ -305,14 +320,27 @@ export class ComparisonsService
     const rejected: string[] = [];
 
     for (const batch of batches) {
-      try {
-        const jobId = await this.engine.submit(
-          batch.map((id) => urlBySubmission.get(id) ?? ""),
-        );
-        accepted.push({ jobId, submissionIds: batch });
-      } catch (caught) {
-        rejected.push(messageOf(caught));
+      const urls = batch.map((id) => urlBySubmission.get(id) ?? "");
+      let lastError = "";
+
+      // The engine queues a bounded number of jobs and answers 503 once it is
+      // full. A campaign of any size submits far more batches than that fits,
+      // so a refusal is "come back shortly", not a failure — dropping the
+      // batch would silently leave those pairs uncompared.
+      for (let attempt = 0; attempt < SUBMIT_ATTEMPTS; attempt += 1) {
+        try {
+          const jobId = await this.engine.submit(urls);
+          accepted.push({ jobId, submissionIds: batch });
+          lastError = "";
+          break;
+        } catch (caught) {
+          lastError = messageOf(caught);
+          if (!isEngineBusy(lastError)) break;
+          await sleep(SUBMIT_BACKOFF_MS);
+        }
       }
+
+      if (lastError !== "") rejected.push(lastError);
     }
 
     if (accepted.length === 0) {
