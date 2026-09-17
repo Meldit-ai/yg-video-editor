@@ -53,17 +53,26 @@ class FakeEngine {
     for (const resolve of waiting) resolve();
   }
 
+  /** Every submission, real or warm-up, in the order the engine saw it. */
+  readonly sequence: string[] = [];
+
   async warm(urls: string[]): Promise<void> {
     this.warmups.push([...urls]);
+    this.sequence.push(`warm:${idOf(urls[0]!)}`);
     if (this.mode === "unreachable") return;
     await Promise.resolve();
   }
 
-  async compare(urls: string[]): Promise<{ jobId: string; job: EngineJob }> {
+  async compare(
+    urls: string[],
+    options: { onSubmitted?: (jobId: string) => void } = {},
+  ): Promise<{ jobId: string; job: EngineJob }> {
     this.calls.push([...urls]);
+    this.sequence.push(`call:${idOf(urls[0]!)}`);
     if (this.mode === "unreachable") {
       throw new Error("could not reach the comparison engine at http://x");
     }
+    options.onSubmitted?.(`job-${this.calls.length}`);
     this.inFlight += 1;
     this.maxInFlight = Math.max(this.maxInFlight, this.inFlight);
     if (this.deferred) {
@@ -515,6 +524,24 @@ describe("UniquenessService", () => {
           urlOf("D"),
           urlOf("E"),
         ]);
+      } finally {
+        delete process.env.COMPARISON_ENGINE_PREFETCH;
+      }
+    });
+
+    it("submits a candidate's real call before warming the next ones, so warm-ups never queue ahead of it", async () => {
+      process.env.COMPARISON_ENGINE_PREFETCH = "2";
+      try {
+        await arrive("A");
+        for (const id of ["B", "C", "D"]) submissions.add(CAMPAIGN, id);
+        engine.deferred = true;
+        service.onArrival("submission", CAMPAIGN);
+        await settle();
+
+        // The engine fills its active slots in submission order: B's own
+        // call must be first in line, the warm-ups behind it.
+        expect(engine.sequence.slice(0, 3)).toEqual(["call:B", "warm:C", "warm:D"]);
+        await drain();
       } finally {
         delete process.env.COMPARISON_ENGINE_PREFETCH;
       }

@@ -364,11 +364,17 @@ export class UniquenessService
       let candidateReady = calls.length === 0 || twins.length > 0;
       let candidateLost = false;
 
-      // The next few candidates are sent to the engine now, so their
-      // fingerprints are being computed on its idle workers while this one
-      // is compared. Paired with the oldest baseline video: the engine needs
+      // The next few candidates are sent to the engine as warm-ups, so their
+      // fingerprints are computed on its idle workers while this one is
+      // compared. Paired with the oldest baseline video: the engine needs
       // two URLs, and that pair is one the real call will ask for anyway.
-      this.warmAhead(pending, index, baseline, warmed, signal);
+      // Only once this candidate's own call holds its place in the engine's
+      // queue — the engine fills its active slots in submission order, and
+      // warm-ups sent first would take every slot and leave the real call
+      // waiting behind work nobody is waiting for.
+      const warmAhead = (): void =>
+        this.warmAhead(pending, index, baseline, warmed, signal);
+      if (calls.length === 0) warmAhead();
 
       // A cold candidate's first call fingerprints it, and must run alone —
       // fired together, every call would download it. After that (or from
@@ -382,6 +388,7 @@ export class UniquenessService
         warmed.has(candidate.id),
         progress,
         signal,
+        warmAhead,
       );
 
       for (const [callIndex, outcome] of outcomes.entries()) {
@@ -500,10 +507,12 @@ export class UniquenessService
     warmedAlready: boolean,
     progress: RunProgress,
     signal: AbortSignal,
+    onFirstSubmitted: () => void,
   ): Promise<CallOutcome[]> {
     const outcomes: CallOutcome[] = new Array<CallOutcome>(calls.length);
     let next = 0;
     let fatal = false;
+    let announced = false;
 
     const run = async (index: number): Promise<void> => {
       const outcome = await this.runCall(
@@ -513,6 +522,11 @@ export class UniquenessService
         calls[index]!,
         progress,
         signal,
+        () => {
+          if (announced) return;
+          announced = true;
+          onFirstSubmitted();
+        },
       );
       outcomes[index] = outcome;
       if (outcome.kind === "fatal") fatal = true;
@@ -555,6 +569,7 @@ export class UniquenessService
     call: Candidate[],
     progress: RunProgress,
     signal: AbortSignal,
+    onSubmitted: () => void,
   ): Promise<CallOutcome> {
     const slice = call.slice(1);
     const urls = call.map((video) => video.url);
@@ -569,6 +584,7 @@ export class UniquenessService
       try {
         ({ jobId, job } = await this.engine.compare(urls, {
           signal,
+          onSubmitted,
           onProgress: (live) => {
             void target
               .updateRun(runId, { ...progress, stage: live.stage })

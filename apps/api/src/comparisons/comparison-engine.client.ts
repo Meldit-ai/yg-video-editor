@@ -131,6 +131,12 @@ export interface WaitForJobOptions {
   maxWaitMs?: number;
   /** Called with every non-terminal poll, for progress mirroring. */
   onProgress?: (job: EngineJob) => void;
+  /**
+   * Called by `compare` once the engine has accepted the job — the moment
+   * it holds its place in the engine's queue, and anything submitted after
+   * this line up behind it.
+   */
+  onSubmitted?: (jobId: string) => void;
 }
 
 /**
@@ -275,6 +281,7 @@ export class ComparisonEngineClient {
     options: WaitForJobOptions = {},
   ): Promise<{ jobId: string; job: EngineJob }> {
     const jobId = await this.submitWithBackoff(urls, options.signal);
+    options.onSubmitted?.(jobId);
     const job = await this.waitForJob(jobId, options);
     return { jobId, job };
   }
