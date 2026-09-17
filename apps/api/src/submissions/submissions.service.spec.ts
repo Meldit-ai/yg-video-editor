@@ -92,7 +92,56 @@ describe("SubmissionsService", () => {
       expect(submissionDelegate.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: { campaignId: "cmp_1", active: true, editorId: "usr_1" },
-          orderBy: { createdAt: "desc" },
+          orderBy: [{ createdAt: "desc" }],
+        }),
+      );
+    });
+
+    it("puts the least duplicated first for the campaign feed", async () => {
+      submissionDelegate.findMany.mockResolvedValue([]);
+
+      await service.findAll("cmp_1", admin, { sort: "original" });
+
+      expect(submissionDelegate.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          // nulls last, or videos no run has reached yet would open the feed
+          // presented as the most original ones.
+          orderBy: [
+            { duplicationScore: { sort: "asc", nulls: "last" } },
+            { createdAt: "desc" },
+          ],
+        }),
+      );
+    });
+
+    it("puts the most duplicated first when asked for the reverse", async () => {
+      submissionDelegate.findMany.mockResolvedValue([]);
+
+      await service.findAll("cmp_1", admin, { sort: "duplicate" });
+
+      expect(submissionDelegate.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          orderBy: [
+            { duplicationScore: { sort: "desc", nulls: "last" } },
+            { createdAt: "desc" },
+          ],
+        }),
+      );
+    });
+
+    it("narrows to flagged videos without loosening the scoping", async () => {
+      submissionDelegate.findMany.mockResolvedValue([]);
+
+      await service.findAll("cmp_1", editor, { flagged: true });
+
+      expect(submissionDelegate.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            campaignId: "cmp_1",
+            active: true,
+            editorId: "usr_1",
+            overThreshold: true,
+          },
         }),
       );
     });

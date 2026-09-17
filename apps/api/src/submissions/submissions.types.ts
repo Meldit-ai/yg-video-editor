@@ -36,6 +36,16 @@ export interface VideoSubmissionDto {
   /** Who submitted it. Admins see every editor's name here. */
   editorId: string;
   editorName: string;
+  /**
+   * Duplication roll-up, written when a comparison run over this campaign
+   * finishes. Null means not compared yet; 0 means compared and matched
+   * nothing. See rollUpScores in comparisons.service.ts.
+   */
+  duplicationScore: number | null;
+  averageDuplicationScore: number | null;
+  topMatchSubmissionId: string | null;
+  overThreshold: boolean;
+  duplicationCheckedAt: Date | null;
   /** Time-limited URL for <video src>. Expires — see playbackExpiresAt. */
   playbackUrl: string;
   playbackExpiresAt: Date;
