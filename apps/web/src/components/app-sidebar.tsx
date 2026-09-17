@@ -2,6 +2,7 @@ import {
   BookUserIcon,
   ChevronsUpDownIcon,
   LogOutIcon,
+  LayoutDashboardIcon,
   MegaphoneIcon,
   UsersIcon,
 } from "lucide-react"
@@ -35,10 +36,17 @@ import {
 import { initials } from "@/lib/format"
 
 /**
- * Rail destinations. Campaigns is open to everyone — admins get the dense
- * table, editors the card grid — while Vendors and Users stay admin-only.
+ * Rail destinations. Dashboard and Campaigns are open to everyone — admins
+ * get the dense campaign table, editors the card grid — while Vendors and
+ * Users stay admin-only.
  */
 const NAV_ITEMS = [
+  {
+    to: "/dashboard",
+    label: "Dashboard",
+    icon: LayoutDashboardIcon,
+    adminOnly: false,
+  },
   {
     to: "/campaigns",
     label: "Campaigns",
