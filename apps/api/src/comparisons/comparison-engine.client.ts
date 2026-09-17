@@ -24,17 +24,16 @@ const REQUEST_TIMEOUT_MS = 20_000;
  * The most URLs worth putting in one job, whatever the engine would accept.
  *
  * A job's cost is its *pair* count, which is quadratic in the URLs, and every
- * pair shares one job timeout. Ten URLs is 45 pairs against the engine's
- * default 420s budget — about 9s a pair, while aligning a single pair is
- * allowed up to 90s on its own, so one slow pair starves the rest and the
- * whole batch times out with none of its pairs scored. Six URLs is 15 pairs,
- * which leaves room for the worst case rather than the average one.
- *
- * Capped here rather than left to configuration because it is a property of
- * how the engine spends a job budget, not a deployment choice: a larger value
- * does not run slower, it silently loses pairs.
+ * pair shares one job timeout. But the classifier's jobs are one fresh video
+ * pinned beside cached ones: the pairs among the cached videos are
+ * comparison-cache hits, so a job of 8 costs 7 alignments at the measured
+ * ~0.5 s each, well inside the engine's 420 s budget. Eight is also the
+ * engine's own request cap (its schema). Capped here rather than left to
+ * configuration because it is a property of how the engine spends a job
+ * budget, not a deployment choice: a larger value does not run slower, it
+ * silently loses pairs.
  */
-const SAFE_URLS_PER_JOB = 6;
+const SAFE_URLS_PER_JOB = 8;
 
 /**
  * URLs the engine accepts in one `POST /v1/compare`.

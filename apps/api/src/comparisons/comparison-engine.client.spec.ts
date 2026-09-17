@@ -33,8 +33,8 @@ describe("engineMaxUrls", () => {
   });
 
   it("never exceeds the safe pair budget, whatever the engine would accept", () => {
-    process.env.COMPARISON_ENGINE_MAX_URLS = "10";
-    expect(engineMaxUrls()).toBe(6);
+    process.env.COMPARISON_ENGINE_MAX_URLS = "12";
+    expect(engineMaxUrls()).toBe(8);
   });
 });
 
