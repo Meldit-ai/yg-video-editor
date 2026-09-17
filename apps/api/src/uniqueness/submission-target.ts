@@ -269,13 +269,15 @@ export class SubmissionTarget implements UniquenessTarget {
   ): Promise<Candidate[]> {
     const rows = await this.prisma.client.videoSubmission.findMany({
       where,
-      select: { id: true, objectKey: true, createdAt: true },
+      select: { id: true, objectKey: true, createdAt: true, contentSha256: true },
       orderBy: { createdAt: "asc" },
     });
     return rows.map((row) => ({
       id: row.id,
       url: this.storage.publicObjectUrl(row.objectKey),
       arrivedAt: row.createdAt,
+      identity:
+        row.contentSha256 === null ? undefined : `sha256:${row.contentSha256}`,
     }));
   }
 }

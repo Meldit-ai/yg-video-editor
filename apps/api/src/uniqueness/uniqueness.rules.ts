@@ -27,6 +27,13 @@ export interface Candidate {
   url: string;
   /** Position in the campaign's queue. Earlier is the original. */
   arrivedAt: Date;
+  /**
+   * An identity of the *bytes*, when known: `etag:<md5>` for a reel on
+   * object storage, `sha256:<hex>` for an upload. Two videos with the same
+   * identity are the same file, whatever their URLs, and need no engine.
+   * Absent when it was never measured — and an absence never matches.
+   */
+  identity?: string;
 }
 
 /** One engine pair, seen from the candidate's side. */
@@ -159,11 +166,23 @@ export interface PinnedPlan {
   /** Each call is the candidate first, then a slice of the baseline. */
   calls: Candidate[][];
   /**
-   * Baseline videos that share the candidate's URL. The engine refuses a job
-   * naming one URL twice, so these are left out of every call; the caller
-   * treats them as a perfect match instead, which is what they are.
+   * Baseline videos that are the same file as the candidate — same URL, or
+   * the same content identity. The engine refuses a job naming one URL
+   * twice, and has nothing to add about identical bytes, so these are left
+   * out of every call; the caller treats them as a perfect match instead,
+   * which is what they are.
    */
-  sameUrl: Candidate[];
+  twins: Candidate[];
+}
+
+/** Same URL, or both sides know their bytes and they agree. */
+export function isTwin(a: Candidate, b: Candidate): boolean {
+  if (a.url === b.url) return true;
+  return (
+    a.identity !== undefined &&
+    b.identity !== undefined &&
+    a.identity === b.identity
+  );
 }
 
 /**
@@ -179,15 +198,15 @@ export function planPinnedCalls(
   baseline: readonly Candidate[],
   cap: number,
 ): PinnedPlan {
-  const sameUrl = baseline.filter((video) => video.url === candidate.url);
-  const others = baseline.filter((video) => video.url !== candidate.url);
+  const twins = baseline.filter((video) => isTwin(candidate, video));
+  const others = baseline.filter((video) => !isTwin(candidate, video));
 
   const perCall = Math.max(1, cap - 1);
   const calls: Candidate[][] = [];
   for (let start = 0; start < others.length; start += perCall) {
     calls.push([candidate, ...others.slice(start, start + perCall)]);
   }
-  return { calls, sameUrl };
+  return { calls, twins };
 }
 
 /** One decimal, matching how the engine reports scores. */

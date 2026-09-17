@@ -19,6 +19,8 @@ export interface UploadedVideo {
   mimetype: string;
   size: number;
   objectKey: string;
+  /** SHA-256 of the bytes, hex, measured by the storage engine as they streamed. */
+  sha256?: string;
 }
 
 /**

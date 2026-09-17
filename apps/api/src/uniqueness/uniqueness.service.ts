@@ -9,7 +9,9 @@ import {
 import { ComparisonStatus, Uniqueness, type Prisma } from "@repo/database";
 import {
   ComparisonEngineClient,
+  callConcurrency,
   engineMaxUrls,
+  prefetchDepth,
 } from "../comparisons/comparison-engine.client.js";
 import type { EngineJob } from "../comparisons/comparison-engine.types.js";
 import {
@@ -21,6 +23,7 @@ import { SubmissionTarget } from "./submission-target.js";
 import {
   PARTIAL_FLOOR,
   classifyMatches,
+  isTwin,
   matchesOf,
   pairValue,
   planPinnedCalls,
@@ -320,20 +323,23 @@ export class UniquenessService
       matchCount: 0,
     };
     const videosSeen = new Set<string>();
+    /** Candidates whose fingerprint has been asked for ahead of their turn. */
+    const warmed = new Set<string>();
     let engineVersion: string | null = null;
     let flaggedPairCount = 0;
     let unreadable = 0;
     let lostCalls = 0;
     let fatal: string | null = null;
 
-    for (const candidate of pending) {
+    for (const [index, candidate] of pending.entries()) {
       if (signal.aborted) return; // Boot will mark the run failed.
+      const startedAt = Date.now();
 
       const [baseline, currentThreshold] = await Promise.all([
         target.loadBaseline(campaignId),
         target.loadThreshold(campaignId),
       ]);
-      const { calls, sameUrl } = planPinnedCalls(
+      const { calls, twins } = planPinnedCalls(
         candidate,
         baseline,
         engineMaxUrls(),
@@ -343,30 +349,43 @@ export class UniquenessService
       for (const call of calls) for (const video of call) videosSeen.add(video.id);
       progress.videoCount = videosSeen.size;
       progress.pairsTotal +=
-        sameUrl.length + calls.reduce((sum, call) => sum + call.length - 1, 0);
+        twins.length + calls.reduce((sum, call) => sum + call.length - 1, 0);
 
-      // A baseline video with the candidate's own URL cannot be sent (the
-      // engine refuses a repeated URL) and does not need to be: it *is* the
-      // same file.
-      const matches: CandidateMatch[] = sameUrl.map((twin) => ({
+      // A baseline video that is the same file — same URL, or the same
+      // bytes by content identity — is a perfect match by definition, and
+      // the engine is not asked about it.
+      const matches: CandidateMatch[] = twins.map((twin) => ({
         otherId: twin.id,
         score: 100,
         containment: 100,
       }));
-      progress.pairsDone += sameUrl.length;
+      progress.pairsDone += twins.length;
 
-      let candidateReady = calls.length === 0 || sameUrl.length > 0;
+      let candidateReady = calls.length === 0 || twins.length > 0;
       let candidateLost = false;
 
-      for (const call of calls) {
-        const outcome = await this.runCall(
-          target,
-          runId,
-          candidate,
-          call,
-          progress,
-          signal,
-        );
+      // The next few candidates are sent to the engine now, so their
+      // fingerprints are being computed on its idle workers while this one
+      // is compared. Paired with the oldest baseline video: the engine needs
+      // two URLs, and that pair is one the real call will ask for anyway.
+      this.warmAhead(pending, index, baseline, warmed, signal);
+
+      // A cold candidate's first call fingerprints it, and must run alone —
+      // fired together, every call would download it. After that (or from
+      // the start, for a warmed one) the calls only align cached videos and
+      // can overlap.
+      const outcomes = await this.runCalls(
+        target,
+        runId,
+        candidate,
+        calls,
+        warmed.has(candidate.id),
+        progress,
+        signal,
+      );
+
+      for (const [callIndex, outcome] of outcomes.entries()) {
+        const call = calls[callIndex]!;
         if (outcome.kind === "fatal") {
           fatal = outcome.message;
           break;
@@ -399,6 +418,11 @@ export class UniquenessService
         flaggedPairCount += matches.filter(
           (match) => pairValue(match.score, match.containment) >= PARTIAL_FLOOR,
         ).length;
+        // One line per video: the first call carries the fingerprinting, so
+        // this is what a bulk run's cost is read off.
+        this.logger.log(
+          `Labelled ${target.kind} ${candidate.id} ${outcome.uniqueness} (${outcome.matchValue}) against ${baseline.length} baseline in ${calls.length} call(s), ${Date.now() - startedAt} ms`,
+        );
       }
 
       await target.updateRun(runId, progress);
@@ -437,10 +461,92 @@ export class UniquenessService
   }
 
   /**
+   * Asks the engine to fingerprint the candidates after `index`, up to the
+   * prefetch depth, each at most once per batch. Twins of a baseline video
+   * are skipped — they will never be sent to the engine at all.
+   */
+  private warmAhead(
+    pending: readonly Candidate[],
+    index: number,
+    baseline: readonly Candidate[],
+    warmed: Set<string>,
+    signal: AbortSignal,
+  ): void {
+    const depth = prefetchDepth();
+    if (depth === 0) return;
+    const anchor = baseline[0] ?? pending[index]!;
+
+    for (const next of pending.slice(index + 1, index + 1 + depth)) {
+      if (warmed.has(next.id)) continue;
+      if (next.url === anchor.url) continue; // the engine refuses a repeated URL
+      if (baseline.some((video) => isTwin(next, video))) continue;
+      warmed.add(next.id);
+      void this.engine.warm([next.url, anchor.url], signal);
+    }
+  }
+
+  /**
+   * Runs one candidate's calls: the first alone when the candidate is cold,
+   * then the rest `callConcurrency()` at a time. Outcomes come back in plan
+   * order whatever order the calls finished in, so the tie-break "the older
+   * baseline video wins" stays deterministic. A fatal outcome stops the
+   * calls that have not started; the ones in flight are left to finish.
+   */
+  private async runCalls(
+    target: UniquenessTarget,
+    runId: string,
+    candidate: Candidate,
+    calls: readonly Candidate[][],
+    warmedAlready: boolean,
+    progress: RunProgress,
+    signal: AbortSignal,
+  ): Promise<CallOutcome[]> {
+    const outcomes: CallOutcome[] = new Array<CallOutcome>(calls.length);
+    let next = 0;
+    let fatal = false;
+
+    const run = async (index: number): Promise<void> => {
+      const outcome = await this.runCall(
+        target,
+        runId,
+        candidate,
+        calls[index]!,
+        progress,
+        signal,
+      );
+      outcomes[index] = outcome;
+      if (outcome.kind === "fatal") fatal = true;
+    };
+
+    if (!warmedAlready && calls.length > 0) {
+      await run(0);
+      next = 1;
+    }
+
+    const worker = async (): Promise<void> => {
+      while (!fatal && next < calls.length) {
+        const index = next;
+        next += 1;
+        await run(index);
+      }
+    };
+    const width = Math.max(1, Math.min(callConcurrency(), calls.length - next));
+    if (next < calls.length && !fatal) {
+      await Promise.all(Array.from({ length: width }, worker));
+    }
+
+    // Calls that never started because of a fatal one report as such, so the
+    // caller sees one fatal and stops — never a "failed" that leaves the
+    // candidate pending for a reason it was not.
+    for (let index = 0; index < calls.length; index += 1) {
+      outcomes[index] ??= { kind: "fatal", message: "stopped after an earlier call failed" };
+    }
+    return outcomes;
+  }
+
+  /**
    * One engine call: `[candidate, ...slice]`, submitted, waited for, and
-   * recorded. Calls for one candidate are made one at a time on purpose —
-   * the first fingerprints the candidate and the rest find it cached, where
-   * firing them together would have each one download it.
+   * recorded.
    */
   private async runCall(
     target: UniquenessTarget,

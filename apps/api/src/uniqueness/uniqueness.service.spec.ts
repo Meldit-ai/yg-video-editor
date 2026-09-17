@@ -1,3 +1,4 @@
+import { Logger } from "@nestjs/common";
 import { ComparisonStatus, Uniqueness, type Prisma } from "@repo/database";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComparisonEngineClient } from "../comparisons/comparison-engine.client.js";
@@ -30,12 +31,32 @@ class FakeEngine {
   readonly scores = new Map<string, { score: number; containment: number }>();
   readonly unreadable = new Set<string>();
   mode: "ok" | "unreachable" | "timeout" = "ok";
+  /** Real calls, in submission order. Warm-ups are recorded separately. */
   readonly calls: string[][] = [];
+  readonly warmups: string[][] = [];
   private inFlight = 0;
   maxInFlight = 0;
+  /**
+   * When set, calls do not finish until `release()` is called — so a test
+   * can see what is in flight together, rather than trusting microtask order.
+   */
+  deferred = false;
+  private readonly waiting: (() => void)[] = [];
 
   score(a: string, b: string, score: number, containment = 0): void {
     this.scores.set(pairKeyOf(a, b), { score, containment });
+  }
+
+  /** Finishes every deferred call that is in flight now. */
+  release(): void {
+    const waiting = this.waiting.splice(0);
+    for (const resolve of waiting) resolve();
+  }
+
+  async warm(urls: string[]): Promise<void> {
+    this.warmups.push([...urls]);
+    if (this.mode === "unreachable") return;
+    await Promise.resolve();
   }
 
   async compare(urls: string[]): Promise<{ jobId: string; job: EngineJob }> {
@@ -45,7 +66,11 @@ class FakeEngine {
     }
     this.inFlight += 1;
     this.maxInFlight = Math.max(this.maxInFlight, this.inFlight);
-    await Promise.resolve();
+    if (this.deferred) {
+      await new Promise<void>((resolve) => this.waiting.push(resolve));
+    } else {
+      await Promise.resolve();
+    }
     this.inFlight -= 1;
 
     if (this.mode === "timeout") {
@@ -293,6 +318,23 @@ describe("UniquenessService", () => {
     );
   });
 
+  /** Lets every pending microtask and continuation run. */
+  async function settle(): Promise<void> {
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+  }
+
+  /** Releases deferred engine calls until the campaign's queue is idle. */
+  async function drain(kind: "submission" | "reel" = "submission"): Promise<void> {
+    let idle = false;
+    void service.whenIdle(kind, CAMPAIGN).then(() => {
+      idle = true;
+    });
+    while (!idle) {
+      engine.release();
+      await settle();
+    }
+  }
+
   /** Uploads one video and waits for the classifier to settle. */
   async function arrive(id: string): Promise<Row> {
     submissions.add(CAMPAIGN, id);
@@ -354,6 +396,18 @@ describe("UniquenessService", () => {
       expect(engine.calls).toEqual([[urlOf("V2"), urlOf("V1")]]);
     });
 
+    it("logs one line per labelled video, with the work it took", async () => {
+      scriptSpecExample();
+      const logSpy = vi.spyOn(Logger.prototype, "log");
+      await arrive("V1");
+      await arrive("V2");
+      const lines = logSpy.mock.calls.map((call) => String(call[0]));
+      expect(lines).toContainEqual(
+        expect.stringMatching(/^Labelled submission V2 DUPLICATE \(96\) against 1 baseline in 1 call\(s\), \d+ ms$/),
+      );
+      logSpy.mockRestore();
+    });
+
     it("never compares against a DUPLICATE", async () => {
       scriptSpecExample();
       await arrive("V1");
@@ -410,14 +464,83 @@ describe("UniquenessService", () => {
       expect(engine.calls).toHaveLength(6);
     });
 
-    it("submits a candidate's calls one at a time", async () => {
-      // The first call fingerprints the candidate; the rest hit the cache.
-      // Fired together they would each download it.
+    it("makes a cold candidate's first call alone, then the rest two at a time", async () => {
+      // The first call fingerprints the candidate; fired together, every call
+      // would download it. Once it is cached the rest can overlap.
       for (const id of ["A", "B", "C", "D", "E", "F", "G"]) await arrive(id);
-      const beforeH = engine.calls.length;
-      await arrive("H");
-      expect(engine.calls.length - beforeH).toBe(3); // 7 baseline / 3 per call
-      expect(engine.maxInFlight).toBe(1);
+      const before = engine.calls.length;
+      engine.deferred = true;
+      submissions.add(CAMPAIGN, "H");
+      service.onArrival("submission", CAMPAIGN);
+
+      await settle();
+      expect(engine.calls.length - before).toBe(1); // first call alone
+      expect(engine.calls.at(-1)![0]).toBe(urlOf("H"));
+      engine.release();
+      await settle();
+      expect(engine.calls.length - before).toBe(3); // the remaining two together
+      expect(engine.maxInFlight).toBe(2);
+      await drain();
+
+      expect(submissions.row("H").uniqueness).toBe(Uniqueness.UNIQUE);
+    });
+
+    it("warms the next candidates' fingerprints while labelling the current one", async () => {
+      process.env.COMPARISON_ENGINE_PREFETCH = "2";
+      try {
+        for (const id of ["A", "B", "C", "D", "E"]) submissions.add(CAMPAIGN, id);
+        engine.deferred = true;
+        service.onArrival("submission", CAMPAIGN);
+
+        // While A is labelled (UNIQUE, no call) B and C are sent ahead; while
+        // B's real call is in flight, D joins them — always two ahead, each
+        // paired with the oldest video so the engine has something to
+        // compare against.
+        await settle();
+        expect(engine.calls).toEqual([[urlOf("B"), urlOf("A")]]);
+        expect(engine.warmups).toEqual([
+          [urlOf("B"), urlOf("A")],
+          [urlOf("C"), urlOf("A")],
+          [urlOf("D"), urlOf("A")],
+        ]);
+        await drain();
+
+        // Warm-ups are not part of the audit trail.
+        const recorded = submissions.runs.flatMap((run) => run.calls.map((c) => c.candidate.id));
+        expect([...new Set(recorded)]).toEqual(["B", "C", "D", "E"]);
+        // Each candidate was warmed at most once.
+        expect(engine.warmups.map((w) => w[0])).toEqual([
+          urlOf("B"),
+          urlOf("C"),
+          urlOf("D"),
+          urlOf("E"),
+        ]);
+      } finally {
+        delete process.env.COMPARISON_ENGINE_PREFETCH;
+      }
+    });
+
+    it("runs a warmed candidate's calls together from the start", async () => {
+      process.env.COMPARISON_ENGINE_PREFETCH = "1";
+      try {
+        for (const id of ["A", "B", "C", "D", "E", "F", "G"]) await arrive(id);
+        engine.deferred = true;
+        submissions.add(CAMPAIGN, "H");
+        submissions.add(CAMPAIGN, "I");
+        service.onArrival("submission", CAMPAIGN);
+
+        await settle(); // H's first call alone; I warmed alongside
+        engine.release();
+        await settle(); // H's remaining two
+        engine.release();
+        await settle(); // I: warmed, so its calls overlap from the start
+        const callsForI = engine.calls.filter((call) => call[0] === urlOf("I"));
+        expect(callsForI.length).toBeGreaterThanOrEqual(2);
+        await drain();
+        expect(submissions.row("I").uniqueness).toBe(Uniqueness.UNIQUE);
+      } finally {
+        delete process.env.COMPARISON_ENGINE_PREFETCH;
+      }
     });
 
     it("processes several pending videos as one batch, in arrival order", async () => {

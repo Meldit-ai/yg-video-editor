@@ -3,6 +3,7 @@ import { Uniqueness, type Prisma } from "@repo/database";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { TrackerService, type TrackerReel } from "../tracker/tracker.service.js";
 import { UniquenessService } from "../uniqueness/uniqueness.service.js";
+import { headMediaAll } from "./media-head.js";
 import { DEFAULT_REEL_LIMIT } from "./dto/import-reels.dto.js";
 import type { CampaignReelDto, ReelImportResultDto } from "./reels.types.js";
 
@@ -74,7 +75,10 @@ export class ReelsService {
     // unknown cannot be shown to precede anything, so it must not be allowed
     // to claim the original's place.
     const ordered = [...fetched].sort(compareByPostedAt);
-    const chosen = ordered.slice(0, limit);
+    const chosen = withMediaIdentity(
+      ordered.slice(0, limit),
+      await headMediaAll(ordered.slice(0, limit).map((reel) => reel.mediaUrl)),
+    );
 
     let imported = 0;
     let updated = 0;
@@ -97,10 +101,10 @@ export class ReelsService {
             trackerPostId: reel.trackerPostId,
           },
         },
-        create: { campaignId, ...toRow(reel) },
+        create: { campaignId, ...reelRowFrom(reel) },
         // Scores are deliberately not cleared on re-import: re-running an
         // import must not throw away a check that already ran.
-        update: toRow(reel),
+        update: reelRowFrom(reel),
       });
 
       if (existing === null) imported += 1;
@@ -170,6 +174,23 @@ export class ReelsService {
   }
 }
 
+/**
+ * Attaches what object storage said about each reel's media. A HEAD that
+ * failed leaves the fields absent, so the row keeps whatever it had.
+ */
+export function withMediaIdentity(
+  reels: readonly TrackerReel[],
+  heads: readonly { sizeBytes: number | null; etag: string | null }[],
+): TrackerReel[] {
+  return reels.map((reel, index) => {
+    const head = heads[index];
+    if (head === undefined || (head.sizeBytes === null && head.etag === null)) {
+      return reel;
+    }
+    return { ...reel, mediaSizeBytes: head.sizeBytes, mediaEtag: head.etag };
+  });
+}
+
 /** Oldest Instagram post first; unknown dates last. */
 function compareByPostedAt(left: TrackerReel, right: TrackerReel): number {
   if (left.postedAt === null && right.postedAt === null) return 0;
@@ -178,8 +199,13 @@ function compareByPostedAt(left: TrackerReel, right: TrackerReel): number {
   return left.postedAt.getTime() - right.postedAt.getTime();
 }
 
-/** The columns an import writes, shared by create and update. */
-function toRow(reel: TrackerReel) {
+/**
+ * The columns an import writes, shared by create and update — and by the
+ * `import-tracker-reels` script, so a reel looks the same whichever way it
+ * came in. Deliberately never includes a label or score: a re-import must not
+ * throw away a check that already ran.
+ */
+export function reelRowFrom(reel: TrackerReel) {
   return {
     trackerPostId: reel.trackerPostId,
     socialUsername: reel.socialUsername,
@@ -190,6 +216,10 @@ function toRow(reel: TrackerReel) {
     postCounts: reel.postCounts as Prisma.InputJsonValue,
     caption: reel.caption,
     invoiceApproved: reel.invoiceApproved,
+    // Only when a HEAD was made: `undefined` is "leave it" to Prisma, and a
+    // re-import that skipped the HEAD must not erase a known identity.
+    ...(reel.mediaSizeBytes === undefined ? {} : { mediaSizeBytes: reel.mediaSizeBytes }),
+    ...(reel.mediaEtag === undefined ? {} : { mediaEtag: reel.mediaEtag }),
   };
 }
 

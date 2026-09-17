@@ -57,7 +57,9 @@ export function CampaignReelsPage() {
     ])
     setCampaign(campaignData)
     setReels(reelData)
-    setRun(runData)
+    // A campaign that has never been checked answers with an empty body,
+    // which the api client reads as undefined — and `undefined !== null`.
+    setRun(runData ?? null)
   }, [id])
 
   useEffect(() => {

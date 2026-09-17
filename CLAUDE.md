@@ -148,6 +148,20 @@ Four things bite:
   one batch — usually one upload against the baseline, pairs for the
   candidate's side only — so most videos are not in the latest run, and the
   UI reads each card's state from its own row (`use-comparison.ts`).
+- **The engine's cost is fingerprinting, once per URL; ours was waiting.**
+  A fresh 2-minute video costs the engine ~30–40 s (decode + hash + embed);
+  a cache-warm comparison costs it <1 s. So the classifier polls every
+  second, fingerprints the next `COMPARISON_ENGINE_PREFETCH` candidates
+  ahead of time on the engine's idle workers (`engine.warm`, a two-URL job
+  whose result nobody reads), and runs a warmed candidate's pinned calls
+  `COMPARISON_ENGINE_CALL_CONCURRENCY` at a time. A cold candidate's *first*
+  call still runs alone — fired together, every call would download it.
+- **Same bytes never reach the engine.** Every submission carries a sha256
+  measured while it streamed (`measureStream`, on the upload engine and on
+  reel adoption); every reel carries the ETag and size from a HEAD on its
+  media (`headMedia`). `planPinnedCalls` treats a baseline video with the
+  same identity as a *twin* — a perfect match, labelled DUPLICATE 100 with
+  no engine call. A missing identity never matches.
 
 **The engine takes at most 4 URLs per call, and that is its hard cap.**
 `engineMaxUrls()` in `comparison-engine.client.ts` is the one place both

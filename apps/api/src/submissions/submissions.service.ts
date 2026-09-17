@@ -111,6 +111,7 @@ export class SubmissionsService {
           // so the row and the stored object never disagree.
           contentType: resolveContentType(file.mimetype, file.originalname),
           sizeBytes: file.size,
+          contentSha256: file.sha256 ?? null,
         },
         include: WITH_EDITOR,
       });

@@ -37,6 +37,13 @@ export interface TrackerReel {
   postCounts: unknown;
   caption: string | null;
   invoiceApproved: boolean;
+  /**
+   * What a HEAD on `mediaUrl` said, when one was made (see reels/media-head).
+   * Absent — not null — when it was not, so an import that skipped the HEAD
+   * leaves the stored values alone.
+   */
+  mediaSizeBytes?: number | null;
+  mediaEtag?: string | null;
 }
 
 /** Upstream feed of currently-active tracker campaigns. No auth today. */

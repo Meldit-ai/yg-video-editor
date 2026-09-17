@@ -106,6 +106,36 @@ describe("ComparisonEngineClient", () => {
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
+    it("returns a job the engine finished within a second after a single one-second poll", async () => {
+      // Cache-warm calls finish in under a second on the engine; every
+      // second of polling granularity is paid on thousands of them.
+      const fetchMock = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValue(jsonResponse(jobPayload("succeeded")));
+
+      const pending = client.waitForJob("job-1");
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await expect(pending).resolves.toMatchObject({ status: "SUCCEEDED" });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps polling every second for the first minute, then every three", async () => {
+      const fetchMock = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementation(async () => jsonResponse(jobPayload("running")));
+
+      const pending = client.waitForJob("job-1");
+      const outcome = expect(pending).rejects.toThrow();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(fetchMock).toHaveBeenCalledTimes(60);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(fetchMock).toHaveBeenCalledTimes(70);
+      // Past the deadline the loop throws; let it, so the test does not leak.
+      await vi.advanceTimersByTimeAsync(30 * 60_000);
+      await outcome;
+    });
+
     it("rides out a transient poll failure rather than abandoning the job", async () => {
       vi.spyOn(globalThis, "fetch")
         .mockRejectedValueOnce(new Error("ECONNRESET"))

@@ -1,6 +1,7 @@
 import { BadRequestException, Logger } from "@nestjs/common";
-import { Transform, pipeline, type Readable } from "node:stream";
+import { pipeline, type Readable } from "node:stream";
 import type { StorageService } from "../storage/storage.service.js";
+import { measureStream } from "./measure-stream.js";
 import {
   MAX_VIDEO_BYTES,
   MAX_VIDEO_SIZE_LABEL,
@@ -24,7 +25,7 @@ interface IncomingFile {
 
 type HandleCallback = (
   error: Error | null,
-  info?: { objectKey: string; size: number },
+  info?: { objectKey: string; size: number; sha256: string },
 ) => void;
 
 /**
@@ -65,15 +66,11 @@ export function createVideoUploadStorage(storage: StorageService) {
       // and without this it would have no key to clean up.
       file.objectKey = objectKey;
 
-      // Counted here rather than trusted from the client, and rather than read
-      // off the SDK's progress events: this is the number that goes in the row.
-      let size = 0;
-      const counter = new Transform({
-        transform(chunk: Buffer, _encoding, done) {
-          size += chunk.length;
-          done(null, chunk);
-        },
-      });
+      // Counted and hashed here rather than trusted from the client, and
+      // rather than read off the SDK's progress events: these are the numbers
+      // that go in the row. The digest is the file's identity for the
+      // duplicate check — a byte-identical re-upload needs no engine.
+      const { stream: counter, result: measured } = measureStream();
 
       // startUpload throws when the bucket is not configured. multer parks on
       // this callback and has no timeout, so a throw that escaped here would
@@ -147,7 +144,8 @@ export function createVideoUploadStorage(storage: StorageService) {
             callback(failure);
             return;
           }
-          callback(null, { objectKey, size });
+          const { sizeBytes, sha256 } = measured();
+          callback(null, { objectKey, size: sizeBytes, sha256 });
         },
         (error: unknown) => {
           const reason =

@@ -199,7 +199,20 @@ describe("SubmissionsService", () => {
             objectKey: "campaigns/cmp_1/abc.mp4",
             contentType: "video/mp4",
             sizeBytes: 1024,
+            contentSha256: null,
           },
+        }),
+      );
+    });
+
+    it("stores the byte identity the storage engine measured", async () => {
+      submissionDelegate.create.mockResolvedValue(row());
+
+      await service.create("cmp_1", editor, upload({ sha256: "ab".repeat(32) }));
+
+      expect(submissionDelegate.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ contentSha256: "ab".repeat(32) }),
         }),
       );
     });

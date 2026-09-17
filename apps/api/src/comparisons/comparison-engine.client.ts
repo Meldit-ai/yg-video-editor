@@ -53,6 +53,31 @@ export function engineMaxUrls(): number {
 }
 
 /**
+ * How many upcoming candidates the classifier fingerprints ahead of time,
+ * in parallel with the one it is labelling. The engine prepares every video
+ * of a job concurrently across its worker pool, but a classifier that sends
+ * one job at a time only ever keeps one worker busy; warming the next few
+ * candidates uses the rest. Default matches the engine's worker count.
+ */
+export function prefetchDepth(): number {
+  const configured = Number(process.env.COMPARISON_ENGINE_PREFETCH ?? "");
+  return Number.isInteger(configured) && configured >= 0 ? configured : 3;
+}
+
+/**
+ * How many of one candidate's pinned calls run at once, once its fingerprint
+ * is cached. Bounded by the engine's active-job slots; past that the extra
+ * calls only queue.
+ */
+export function callConcurrency(): number {
+  const configured = Number(process.env.COMPARISON_ENGINE_CALL_CONCURRENCY ?? "");
+  return Number.isInteger(configured) && configured >= 1 ? configured : 2;
+}
+
+/** A warm-up is discarded work; it is not worth waiting long for. */
+const WARM_MAX_WAIT_MS = 5 * 60 * 1000;
+
+/**
  * How long, and how often, to keep asking a full engine for room.
  *
  * The engine queues a bounded number of jobs and answers 503 `engine_busy`
@@ -63,10 +88,16 @@ export function engineMaxUrls(): number {
 const SUBMIT_ATTEMPTS = 60;
 const SUBMIT_BACKOFF_MS = 5_000;
 
-/** Poll fast while the job is young, then back off — see `pollInterval`. */
-const FAST_POLL_MS = 3_000;
-const SLOW_POLL_MS = 8_000;
-const FAST_POLL_WINDOW_MS = 30_000;
+/**
+ * Poll every second while the job is young, then back off — see
+ * `pollInterval`. A cache-warm comparison finishes on the engine in under a
+ * second, and a classifier pass makes thousands of them, so every second of
+ * polling granularity is paid thousands of times over. A fresh fingerprint
+ * takes tens of seconds; after a minute the call is clearly one of those.
+ */
+const FAST_POLL_MS = 1_000;
+const SLOW_POLL_MS = 3_000;
+const FAST_POLL_WINDOW_MS = 60_000;
 
 /**
  * How long to wait for a job before giving up on it.
@@ -221,6 +252,23 @@ export class ComparisonEngineClient {
     }
   }
 
+  /**
+   * Gets the engine to fingerprint `urls` now, for a job that will follow.
+   *
+   * Just a comparison whose result nobody reads: the engine has no
+   * fingerprint-only endpoint, and a two-URL job is the cheapest way to make
+   * it prepare a video. Never throws and never waits out a full queue —
+   * a warm-up that did not happen only means the real call is slower.
+   */
+  async warm(urls: string[], signal?: AbortSignal): Promise<void> {
+    try {
+      const jobId = await this.submit(urls);
+      await this.waitForJob(jobId, { signal, maxWaitMs: WARM_MAX_WAIT_MS });
+    } catch (caught) {
+      this.logger.debug(`Warm-up over ${urls.length} URLs did not finish: ${messageOf(caught)}`);
+    }
+  }
+
   /** Submit and wait, as one call. */
   async compare(
     urls: string[],
@@ -233,8 +281,8 @@ export class ComparisonEngineClient {
 
   /**
    * Fast at first, slower once the call is clearly not a quick one. The first
-   * seconds are when a small job finishes and when a broken one fails, so
-   * that is where the responsiveness is worth paying for.
+   * minute is where a cache-warm job finishes and where a broken one fails,
+   * so that is where the responsiveness is worth paying for.
    */
   private pollInterval(startedAt: number): number {
     return Date.now() - startedAt < FAST_POLL_WINDOW_MS
