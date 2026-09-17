@@ -215,9 +215,9 @@ export function CampaignReelsPage() {
             copies={copies.length}
             threshold={campaign?.duplicationThreshold ?? 0}
           />
-          <div className="flex flex-col gap-2">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {reels.map((reel, index) => (
-              <ReelRow key={reel.id} reel={reel} rank={index + 1} />
+              <ReelCard key={reel.id} reel={reel} rank={index + 1} />
             ))}
           </div>
         </>
@@ -344,30 +344,47 @@ function Stat({
   )
 }
 
-function ReelRow({ reel, rank }: { reel: CampaignReel; rank: number }) {
+function ReelCard({ reel, rank }: { reel: CampaignReel; rank: number }) {
+  const [isUnplayable, setUnplayable] = useState(false)
   const views = reel.postCounts?.views ?? reel.postCounts?.reach ?? null
+  const isCopy = !reel.isOriginal && reel.duplicationScore !== null
 
   return (
     <div
       className={cn(
-        "flex items-center gap-3 rounded-lg border px-3 py-2.5",
-        !reel.isOriginal &&
-          reel.duplicationScore !== null &&
-          "border-[var(--warning)]/40 bg-[color-mix(in_oklch,var(--warning)_5%,transparent)]",
+        "overflow-hidden rounded-lg border transition-colors",
+        isCopy && "border-[var(--warning)]/50",
       )}
     >
-      <span className="numeric w-6 shrink-0 text-right text-[12px] text-muted-foreground">
-        {rank}
-      </span>
+      {isUnplayable ? (
+        <div className="flex aspect-[9/16] items-center justify-center bg-muted/40 px-4 text-center text-[12px] text-muted-foreground">
+          This reel cannot be played here.
+        </div>
+      ) : (
+        /* The browser's own controls: scrubbing, volume and fullscreen are all
+           wanted when comparing two cuts, and all already there.
+           preload="metadata" fetches the header without pulling the file. */
+        <video
+          controls
+          preload="metadata"
+          src={reel.mediaUrl}
+          onError={() => setUnplayable(true)}
+          className="aspect-[9/16] w-full bg-black object-contain"
+        />
+      )}
 
-      <div className="min-w-0 flex-1">
+      <div className="flex flex-col gap-1.5 px-3 py-2.5">
         <div className="flex items-center gap-2">
-          <span className="truncate text-[14px] font-medium">
+          <span className="numeric shrink-0 text-[11px] text-muted-foreground">
+            {rank}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
             @{reel.username}
           </span>
           <ScoreBadge reel={reel} />
         </div>
-        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px] text-muted-foreground">
+
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px] text-muted-foreground">
           <span
             className="numeric"
             title={reel.postedAt === null ? undefined : fullDate(reel.postedAt)}
@@ -380,30 +397,26 @@ function ReelRow({ reel, rank }: { reel: CampaignReel; rank: number }) {
               <span className="numeric">{compact(views)} views</span>
             </>
           )}
-          {reel.originalUsername !== null && (
-            <>
-              <MetaDivider />
-              <span className="inline-flex items-center gap-1">
-                <CopyIcon className="size-3" />
-                copy of @{reel.originalUsername}
-              </span>
-            </>
+          {reel.permalink !== null && (
+            <a
+              href={reel.permalink}
+              target="_blank"
+              rel="noreferrer"
+              className="ml-auto inline-flex items-center gap-1 rounded transition-colors outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
+            >
+              <ExternalLinkIcon className="size-3" />
+              Post
+            </a>
           )}
         </div>
-      </div>
 
-      {reel.permalink !== null && (
-        <Button asChild variant="ghost" size="icon" className="size-8 shrink-0">
-          <a
-            href={reel.permalink}
-            target="_blank"
-            rel="noreferrer"
-            aria-label={`Open @${reel.username}'s reel on Instagram`}
-          >
-            <ExternalLinkIcon className="size-3.5" />
-          </a>
-        </Button>
-      )}
+        {reel.originalUsername !== null && (
+          <span className="inline-flex items-center gap-1 text-[12px] text-[var(--warning)]">
+            <CopyIcon className="size-3" />
+            copy of @{reel.originalUsername}
+          </span>
+        )}
+      </div>
     </div>
   )
 }

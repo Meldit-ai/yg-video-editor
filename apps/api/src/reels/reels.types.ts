@@ -8,6 +8,11 @@ export interface CampaignReelDto {
   username: string;
   socialUsername: string;
   permalink: string | null;
+  /**
+   * The reel's own .mp4, public on the tracker's storage. Played directly in
+   * a <video>; there is no signing to do, since it is not ours to sign.
+   */
+  mediaUrl: string;
   /** When it went live on Instagram. Null when upstream sent nothing usable. */
   postedAt: Date | null;
   caption: string | null;

@@ -361,6 +361,8 @@ export interface CampaignReel {
   username: string
   socialUsername: string
   permalink: string | null
+  /** The reel's own .mp4 — public, so it plays without signing. */
+  mediaUrl: string
   /** When it went live on Instagram — half the evidence of who posted first. */
   postedAt: string | null
   caption: string | null
