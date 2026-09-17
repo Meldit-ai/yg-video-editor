@@ -309,3 +309,46 @@ export interface EditorDashboardStats {
   rateCard: number | null
   perCampaign: DashboardCampaignStat[]
 }
+
+/* ------------------------------------------------------ vendor shares */
+
+/** Mirrors apps/api/src/shares/shares.types.ts. */
+export type VendorShareStatus =
+  | "PENDING"
+  | "SENT"
+  | "DELIVERED"
+  | "FAILED"
+  /** No usable WhatsApp number — never attempted. */
+  | "UNREACHABLE"
+
+export interface VendorShareRecipient {
+  id: string
+  vendorId: string
+  vendorName: string
+  waNumber: string | null
+  status: VendorShareStatus
+  /** True when the 24-hour window was shut and the template was used. */
+  usedTemplate: boolean
+  errorMessage: string | null
+  sentAt: string | null
+}
+
+export interface VendorShare {
+  id: string
+  campaignId: string
+  createdById: string
+  createdByName: string
+  messageBody: string
+  submissionIds: string[]
+  createdAt: string
+  recipients: VendorShareRecipient[]
+}
+
+/** A vendor in the share picker, with reachability already resolved. */
+export interface ShareableVendor {
+  id: string
+  name: string
+  phoneNumber: string
+  /** False when the stored number cannot be dialled — shown disabled. */
+  reachable: boolean
+}

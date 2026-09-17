@@ -9,6 +9,7 @@ import {
 import { motion, useReducedMotion } from "motion/react"
 
 import { EmptyState } from "@/components/empty-state"
+import { VendorShareDialog } from "@/components/vendor-share-dialog"
 import { MetaDivider } from "@/components/page-header"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -44,6 +45,7 @@ export function CampaignFeed({ campaign }: { campaign: Campaign }) {
   const [sort, setSort] = useState<Sort>("original")
   const [flaggedOnly, setFlaggedOnly] = useState(false)
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
+  const [isShareOpen, setShareOpen] = useState(false)
   const reduceMotion = useReducedMotion()
 
   const { items, isLoading, error, refetch } = useCollection<VideoSubmission>(
@@ -179,13 +181,25 @@ export function CampaignFeed({ campaign }: { campaign: Campaign }) {
           >
             Clear
           </Button>
-          {/* Wired up on day 5, when the WhatsApp send lands. */}
-          <Button size="sm" className="h-8 text-[12px]" disabled>
+          <Button
+            size="sm"
+            className="h-8 text-[12px]"
+            onClick={() => setShareOpen(true)}
+          >
             <SendIcon className="size-3.5" />
             Send to vendors
           </Button>
         </div>
       )}
+
+      <VendorShareDialog
+        campaignId={campaign.id}
+        campaignTitle={campaign.title}
+        submissionIds={visibleSelected.map((item) => item.id)}
+        open={isShareOpen}
+        onOpenChange={setShareOpen}
+        onSent={() => setSelected(new Set())}
+      />
     </section>
   )
 }
