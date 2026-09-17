@@ -15,6 +15,22 @@ export interface WhatsAppSendResult {
   messageId: string;
 }
 
+/**
+ * Meta took the request but will not deliver it.
+ *
+ * Raised for a free-form message sent outside the 24-hour window, which Meta
+ * answers with 200, a message id and no `message_status` — no error code, no
+ * warning. The caller retries with an approved template.
+ */
+export class WhatsAppNotDeliverable extends Error {
+  constructor(readonly messageId: string) {
+    super(
+      "WhatsApp accepted the request but will not deliver it — the 24-hour window is closed.",
+    );
+    this.name = "WhatsAppNotDeliverable";
+  }
+}
+
 export class WhatsAppError extends Error {
   constructor(
     message: string,
@@ -155,8 +171,8 @@ export class WhatsAppClient {
       );
     }
 
-    const messageId = readMessageId(parsed);
-    if (messageId === null) {
+    const message = readMessage(parsed);
+    if (message === null) {
       // A 200 with no id is not a send we can track; treat it as a failure
       // rather than recording a message nobody can follow up.
       throw new WhatsAppError(
@@ -165,7 +181,10 @@ export class WhatsAppClient {
         true,
       );
     }
-    return { messageId };
+    if (!message.accepted) {
+      throw new WhatsAppNotDeliverable(message.id);
+    }
+    return { messageId: message.id };
   }
 }
 
@@ -192,10 +211,21 @@ function readError(payload: unknown): { message: string; code: number | null } {
   };
 }
 
-function readMessageId(payload: unknown): string | null {
+function readMessage(
+  payload: unknown,
+): { id: string; accepted: boolean } | null {
   if (typeof payload !== "object" || payload === null) return null;
   const { messages } = payload as { messages?: unknown };
   if (!Array.isArray(messages) || messages.length === 0) return null;
-  const first = messages[0] as { id?: unknown };
-  return typeof first.id === "string" ? first.id : null;
+  const first = messages[0] as { id?: unknown; message_status?: unknown };
+  if (typeof first.id !== "string") return null;
+  return {
+    id: first.id,
+    // Meta answers 200 with an id and NO `message_status` for a free-form
+    // message sent outside the 24-hour window: it takes the request and drops
+    // the message, without an error anywhere. Treating that as sent is how a
+    // vendor silently never hears from us, so only an explicit "accepted"
+    // counts as delivered to WhatsApp.
+    accepted: first.message_status === "accepted",
+  };
 }

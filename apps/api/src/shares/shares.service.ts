@@ -10,7 +10,11 @@ import type {
   VendorShareDto,
   VendorShareRecipientDto,
 } from "./shares.types.js";
-import { WhatsAppClient, WhatsAppError } from "./whatsapp.client.js";
+import {
+  WhatsAppClient,
+  WhatsAppError,
+  WhatsAppNotDeliverable,
+} from "./whatsapp.client.js";
 
 /** The template used when a vendor's 24-hour window is shut. */
 const TEMPLATE_NAME = process.env.WHATSAPP_TEMPLATE_NAME ?? "vendor_review_request";
@@ -217,12 +221,13 @@ export class SharesService {
         result = await this.whatsapp.sendText(waNumber, body);
       } catch (caught) {
         // The typed message only reaches a vendor who wrote to us in the last
-        // 24 hours. Outside that window Meta refuses it, and the approved
-        // template is the only thing that will land — so use it rather than
-        // reporting a failure the admin cannot act on.
-        if (!(caught instanceof WhatsAppError) || !isOutsideWindow(caught)) {
-          throw caught;
-        }
+        // 24 hours. Outside it Meta either refuses the send outright or — more
+        // often — takes it and silently drops it, so both shapes mean the same
+        // thing: fall back to the approved template, which always lands.
+        const outsideWindow =
+          caught instanceof WhatsAppNotDeliverable ||
+          (caught instanceof WhatsAppError && isOutsideWindow(caught));
+        if (!outsideWindow) throw caught;
         usedTemplate = true;
         result = await this.whatsapp.sendTemplate(
           waNumber,
