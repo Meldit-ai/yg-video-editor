@@ -61,15 +61,26 @@ export function VendorShareDialog({
   const [message, setMessage] = useState("")
   const [isSending, setSending] = useState(false)
   const [result, setResult] = useState<VendorShare | null>(null)
+  /**
+   * The videos as they were when the dialog opened.
+   *
+   * Snapshotted rather than read live: a successful send clears the feed's
+   * selection, and reading through to it would empty this mid-dialog — so a
+   * second send from the same dialog would post no videos at all.
+   */
+  const [shared, setShared] = useState<readonly string[]>([])
 
   // Reset per opening: a stale result from last time would read as this
-  // share's outcome.
+  // share's outcome. Keyed on `open` alone, so nothing the send changes
+  // downstream can re-run it and wipe what the admin has typed.
   useEffect(() => {
     if (!open) return
+    const ids = [...submissionIds]
+    setShared(ids)
     setResult(null)
     setSelected(new Set())
     setMessage(
-      `Hi, please review these ${submissionIds.length === 1 ? "video" : "videos"} for ${campaignTitle} and share your feedback.`,
+      `Hi, please review these ${ids.length === 1 ? "video" : "videos"} for ${campaignTitle} and share your feedback.`,
     )
     let cancelled = false
     api
@@ -83,7 +94,8 @@ export function VendorShareDialog({
     return () => {
       cancelled = true
     }
-  }, [open, campaignTitle, submissionIds.length])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- snapshot on open only
+  }, [open])
 
   function toggle(id: string) {
     setSelected((current) => {
@@ -101,7 +113,7 @@ export function VendorShareDialog({
         `/campaigns/${campaignId}/shares`,
         {
           message,
-          submissionIds: [...submissionIds],
+          submissionIds: [...shared],
           vendorIds: [...selected],
         },
       )
@@ -139,7 +151,7 @@ export function VendorShareDialog({
           </DialogTitle>
           <DialogDescription className="text-[13px]">
             {result === null
-              ? `${submissionIds.length} ${submissionIds.length === 1 ? "video" : "videos"} from ${campaignTitle}. Links are added to your message automatically.`
+              ? `${shared.length} ${shared.length === 1 ? "video" : "videos"} from ${campaignTitle}. Links are added to your message automatically.`
               : "What happened for each vendor."}
           </DialogDescription>
         </DialogHeader>
@@ -232,6 +244,7 @@ export function VendorShareDialog({
                 onClick={() => void send()}
                 disabled={
                   isSending ||
+                  shared.length === 0 ||
                   reachableSelected === 0 ||
                   message.trim().length === 0
                 }
@@ -243,9 +256,11 @@ export function VendorShareDialog({
                 )}
                 {isSending
                   ? "Sending"
-                  : reachableSelected === 0
-                    ? "Select vendors"
-                    : `Send to ${reachableSelected}`}
+                  : shared.length === 0
+                    ? "No videos selected"
+                    : reachableSelected === 0
+                      ? "Select vendors"
+                      : `Send to ${reachableSelected}`}
               </Button>
             </>
           ) : (
