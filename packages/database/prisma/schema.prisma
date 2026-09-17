@@ -503,6 +503,20 @@ model CampaignReel {
   caption         String?
   invoiceApproved Boolean @default(false)
 
+  /// How duplicated this reel is, 0-100, measured only against reels posted
+  /// BEFORE it. So the earliest reel in a group scores 0 and is the original,
+  /// and every later copy carries a score against it. Null = not checked yet.
+  duplicationScore Float?
+
+  /// The earlier reel it scored highest against. A plain id, so it survives
+  /// that reel being deactivated.
+  originalReelId String?
+
+  /// True when nothing earlier matched it above the threshold.
+  isOriginal Boolean @default(false)
+
+  checkedAt DateTime?
+
   /// Soft-delete flag — see User.active. Set false when a post leaves the
   /// tracker feed, so past findings stay readable.
   active Boolean @default(true)
