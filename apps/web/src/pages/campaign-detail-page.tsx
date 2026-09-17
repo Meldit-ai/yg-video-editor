@@ -4,6 +4,7 @@ import {
   ArrowLeftIcon,
   ArrowRightIcon,
   LayersIcon,
+  SparklesIcon,
   RotateCwIcon,
   SearchXIcon,
   TriangleAlertIcon,
@@ -280,6 +281,16 @@ export function CampaignDetailPage() {
           >
             <LayersIcon className="size-3.5" />
             Campaign feed
+            <ArrowRightIcon className="size-3.5 transition-transform group-hover:translate-x-0.5" />
+          </Link>
+        )}
+        {isAdmin && campaign.trackerCampaignId !== null && (
+          <Link
+            to={`/campaigns/${campaign.id}/reels`}
+            className="group -mr-1.5 inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[13px] text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
+          >
+            <SparklesIcon className="size-3.5" />
+            Instagram reels
             <ArrowRightIcon className="size-3.5 transition-transform group-hover:translate-x-0.5" />
           </Link>
         )}

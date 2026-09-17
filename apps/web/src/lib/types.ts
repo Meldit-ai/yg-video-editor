@@ -352,3 +352,56 @@ export interface ShareableVendor {
   /** False when the stored number cannot be dialled — shown disabled. */
   reachable: boolean
 }
+
+/* ------------------------------------------------------ campaign reels */
+
+/** Mirrors apps/api/src/reels/reels.types.ts. */
+export interface CampaignReel {
+  id: string
+  username: string
+  socialUsername: string
+  permalink: string | null
+  /** When it went live on Instagram — half the evidence of who posted first. */
+  postedAt: string | null
+  caption: string | null
+  postCounts: {
+    likes?: number
+    views?: number
+    reach?: number
+    comments?: number
+  } | null
+  /**
+   * 0-100, measured only against reels posted BEFORE it. Null means it has
+   * not been checked yet — which is not the same as 0.
+   */
+  duplicationScore: number | null
+  originalReelId: string | null
+  /** The profile it was copied from, when it was. */
+  originalUsername: string | null
+  isOriginal: boolean
+  checkedAt: string | null
+}
+
+export interface ReelImportResult {
+  campaignId: string
+  totalReels: number
+  imported: number
+  updated: number
+  /** Reels the tracker offered beyond the window that was asked for. */
+  skipped: number
+}
+
+export interface ReelCheckRun {
+  id: string
+  campaignId: string
+  status: ComparisonStatus
+  threshold: number
+  reelCount: number
+  pairsDone: number
+  pairsTotal: number
+  /** Reels found to be a copy of something earlier. */
+  matchCount: number
+  errorMessage: string | null
+  createdAt: string
+  completedAt: string | null
+}
