@@ -62,11 +62,12 @@ export class ReelsController {
   /**
    * POST .../reels/check — compare every reel against the ones posted before it.
    *
-   * Runs to completion rather than returning a job id: the engine caches
-   * fingerprints, so only the first check on a campaign is slow.
+   * Returns as soon as the run exists, because a first pass takes the better
+   * part of an hour. Poll GET .../reels/check for progress, and GET .../reels
+   * for the scores, which are written as each reel finishes.
    */
   @Post("check")
   runCheck(@Param("campaignId") campaignId: string): Promise<ReelCheckRunDto> {
-    return this.check.run(campaignId);
+    return this.check.start(campaignId);
   }
 }

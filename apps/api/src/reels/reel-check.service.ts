@@ -43,12 +43,68 @@ export class ReelCheckService {
   }
 
   /**
-   * Compares every stored reel against the ones posted before it.
+   * Marks any run left mid-flight by a restart as failed.
    *
-   * Reels are fingerprinted once by the engine and cached forever, so the
-   * first run over a campaign is slow and every later one is fast.
+   * A check lives in a background task, not a database queue, so a restart
+   * ends it with the row still saying RUNNING. Left alone that row blocks the
+   * next check forever and reads as "still working" to anyone watching.
    */
-  async run(campaignId: string): Promise<ReelCheckRunDto> {
+  async onApplicationBootstrap(): Promise<void> {
+    try {
+      const { count } = await this.prisma.client.reelMatchRun.updateMany({
+        where: { status: ComparisonStatus.RUNNING },
+        data: {
+          status: ComparisonStatus.FAILED,
+          errorMessage: "The server restarted while this check was running.",
+          completedAt: new Date(),
+        },
+      });
+      if (count > 0) {
+        this.logger.warn(`Marked ${count} interrupted reel check(s) as failed`);
+      }
+    } catch (caught) {
+      // A database that is not up yet must not stop the app booting.
+      const reason = caught instanceof Error ? caught.message : String(caught);
+      this.logger.warn(`Could not sweep interrupted reel checks: ${reason}`);
+    }
+  }
+
+  /**
+   * Starts a check and returns immediately.
+   *
+   * The work runs in the background because a first pass takes the better part
+   * of an hour — far longer than any HTTP timeout between here and a browser.
+   * Progress is read back from the run row, which is written as each reel
+   * finishes.
+   */
+  async start(campaignId: string): Promise<ReelCheckRunDto> {
+    const running = await this.prisma.client.reelMatchRun.findFirst({
+      where: { campaignId, status: ComparisonStatus.RUNNING },
+    });
+    // One at a time: a second run would compare the same pairs concurrently
+    // and race the first one writing its scores.
+    if (running !== null) return toDto(running);
+
+    // Created here so the caller gets a row to poll immediately; the work
+    // itself is fire-and-forget. It never throws — a failure is recorded on
+    // the row, which is the only place anyone will look for it.
+    const created = await this.createRun(campaignId);
+    void this.execute(created.id, campaignId).catch((caught: unknown) => {
+      const reason = caught instanceof Error ? caught.message : String(caught);
+      this.logger.error(`Reel check ${created.id} failed: ${reason}`);
+      void this.prisma.client.reelMatchRun.update({
+        where: { id: created.id },
+        data: {
+          status: ComparisonStatus.FAILED,
+          errorMessage: reason,
+          completedAt: new Date(),
+        },
+      });
+    });
+    return toDto(created);
+  }
+
+  private async execute(runId: string, campaignId: string): Promise<void> {
     const [campaign, reels] = await Promise.all([
       this.prisma.client.campaign.findFirst({
         where: { id: campaignId, active: true },
@@ -72,15 +128,11 @@ export class ReelCheckService {
     const threshold = campaign.duplicationThreshold;
     const pairsTotal = (reels.length * (reels.length - 1)) / 2;
 
-    const run = await this.prisma.client.reelMatchRun.create({
-      data: {
-        campaignId,
-        status: ComparisonStatus.RUNNING,
-        threshold,
-        reelCount: reels.length,
-        pairsTotal,
-      },
+    await this.prisma.client.reelMatchRun.update({
+      where: { id: runId },
+      data: { threshold, reelCount: reels.length, pairsTotal },
     });
+    const run = { id: runId };
 
     this.logger.log(
       `Checking ${reels.length} reel(s) on "${campaign.title}" — ${pairsTotal} pair(s), threshold ${threshold}`,
@@ -93,6 +145,7 @@ export class ReelCheckService {
 
     let pairsDone = 0;
     let failed = 0;
+    let matchCount = 0;
 
     // Each reel against everything before it, in slices the engine will take.
     // The candidate is pinned in every call, so a slice of size N covers N
@@ -128,11 +181,25 @@ export class ReelCheckService {
           data: { pairsDone },
         });
       }
+
+      // Written as each reel finishes rather than all at the end: a first run
+      // takes the better part of an hour, and a list that stays empty until
+      // the last pair lands reads as broken rather than busy.
+      const match = best.get(candidate.id);
+      const isCopy = match !== undefined && match.score >= threshold;
+      if (isCopy) matchCount += 1;
+      await this.writeScore(candidate.id, match, threshold);
+      await this.prisma.client.reelMatchRun.update({
+        where: { id: run.id },
+        data: { matchCount },
+      });
     }
 
-    const matchCount = await this.writeScores(reels, best, threshold);
+    // The earliest reel had nothing before it to be a copy of, so it is the
+    // original by definition. Written last because nothing above touches it.
+    await this.writeScore(reels[0]!.id, undefined, threshold);
 
-    const finished = await this.prisma.client.reelMatchRun.update({
+    await this.prisma.client.reelMatchRun.update({
       where: { id: run.id },
       data: {
         status:
@@ -148,7 +215,13 @@ export class ReelCheckService {
     this.logger.log(
       `Reel check finished: ${matchCount} of ${reels.length} reel(s) are copies of something earlier`,
     );
-    return toDto(finished);
+  }
+
+  /** The row a caller polls, created before any work starts. */
+  private async createRun(campaignId: string) {
+    return this.prisma.client.reelMatchRun.create({
+      data: { campaignId, status: ComparisonStatus.RUNNING, threshold: 0 },
+    });
   }
 
   /**
@@ -201,35 +274,29 @@ export class ReelCheckService {
     }
   }
 
-  /** Writes each reel's score, and returns how many were copies. */
-  private async writeScores(
-    reels: readonly { id: string }[],
-    best: ReadonlyMap<string, { score: number; againstId: string }>,
+  /**
+   * Writes one reel's verdict.
+   *
+   * A reel with no earlier match scores 0 and is the original — including the
+   * very first, which had nothing before it to be a copy of.
+   */
+  private async writeScore(
+    reelId: string,
+    match: { score: number; againstId: string } | undefined,
     threshold: number,
-  ): Promise<number> {
-    const checkedAt = new Date();
-    let matchCount = 0;
+  ): Promise<void> {
+    const score = match?.score ?? 0;
+    const isCopy = match !== undefined && score >= threshold;
 
-    for (const reel of reels) {
-      const match = best.get(reel.id);
-      // No earlier reel matched it — including the very first, which by
-      // definition had nothing before it to be a copy of.
-      const score = match?.score ?? 0;
-      const isCopy = match !== undefined && score >= threshold;
-      if (isCopy) matchCount += 1;
-
-      await this.prisma.client.campaignReel.update({
-        where: { id: reel.id },
-        data: {
-          duplicationScore: score,
-          originalReelId: isCopy ? match.againstId : null,
-          isOriginal: !isCopy,
-          checkedAt,
-        },
-      });
-    }
-
-    return matchCount;
+    await this.prisma.client.campaignReel.update({
+      where: { id: reelId },
+      data: {
+        duplicationScore: score,
+        originalReelId: isCopy ? match.againstId : null,
+        isOriginal: !isCopy,
+        checkedAt: new Date(),
+      },
+    });
   }
 }
 
