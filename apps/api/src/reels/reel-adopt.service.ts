@@ -47,14 +47,23 @@ export class ReelAdoptService {
   ) {}
 
   /**
-   * Copies every not-yet-adopted reel on a campaign into a submission.
+   * Copies not-yet-adopted reels on a campaign into submissions.
    *
    * Attributed to the editor given, since a submission must belong to someone
    * and the reel's Instagram profile is not a user of this system. The
    * creator's handle is kept in the file name so the row still says where it
    * came from.
+   *
+   * `source` decides which workflow the rows join, and `limit` how many are
+   * taken — oldest first, so a bounded run still starts at the campaign's
+   * beginning and the classifier sees the real original.
    */
-  async adoptAll(campaignId: string, editorId: string): Promise<AdoptResultDto> {
+  async adoptAll(
+    campaignId: string,
+    editorId: string,
+    source: SubmissionSource = SubmissionSource.TRACKER,
+    limit?: number,
+  ): Promise<AdoptResultDto> {
     const [campaign, editor, reels] = await Promise.all([
       this.prisma.client.campaign.findFirst({
         where: { id: campaignId, active: true },
@@ -75,6 +84,7 @@ export class ReelAdoptService {
         // Oldest first, so the earliest post is the first submission on the
         // campaign — which is what makes it the original once scored.
         orderBy: [{ postedAt: "asc" }, { createdAt: "asc" }],
+        ...(limit === undefined ? {} : { take: limit }),
       }),
     ]);
 
@@ -93,8 +103,13 @@ export class ReelAdoptService {
 
     // File names carry the reel id, so a second run can tell what it already
     // took without a column linking the two tables.
+    //
+    // Scoped to the source being written, not the whole campaign: the same
+    // reel can legitimately exist once in each workflow, and a campaign that
+    // already holds it as a tracker row must still be able to take it as an
+    // editor hand-in.
     const existing = await this.prisma.client.videoSubmission.findMany({
-      where: { campaignId, active: true },
+      where: { campaignId, active: true, source },
       select: { fileName: true },
     });
     const taken = new Set(
@@ -113,7 +128,7 @@ export class ReelAdoptService {
         continue;
       }
       try {
-        await this.adoptOne(campaignId, editor.id, reel);
+        await this.adoptOne(campaignId, editor.id, reel, source);
         adopted += 1;
       } catch (caught) {
         failed += 1;
@@ -144,6 +159,7 @@ export class ReelAdoptService {
     campaignId: string,
     editorId: string,
     reel: { id: string; username: string; mediaUrl: string },
+    source: SubmissionSource,
   ): Promise<void> {
     const response = await fetch(reel.mediaUrl, {
       signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
@@ -177,9 +193,8 @@ export class ReelAdoptService {
           objectKey,
           contentType,
           sizeBytes,
-          // Never an editor's hand-in, however it is attributed: the campaign
-          // feed reads one workflow at a time and this belongs to the other.
-          source: SubmissionSource.TRACKER,
+          // Which workflow this row joins; see adoptAll's `source`.
+          source,
         },
       });
     } catch (caught) {

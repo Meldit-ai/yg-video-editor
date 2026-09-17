@@ -87,6 +87,11 @@ export class ReelsController {
     @Param("campaignId") campaignId: string,
     @Body() body: AdoptReelsDto,
   ): Promise<AdoptResultDto> {
-    return this.adopt.adoptAll(campaignId, body.editorId);
+    return this.adopt.adoptAll(
+      campaignId,
+      body.editorId,
+      body.source,
+      body.limit,
+    );
   }
 }
