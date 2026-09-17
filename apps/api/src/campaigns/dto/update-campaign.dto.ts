@@ -1,13 +1,21 @@
-import { Transform } from "class-transformer";
+import { Transform, Type } from "class-transformer";
 import {
   IsBoolean,
   IsEnum,
   IsNotEmpty,
+  IsNumber,
   IsOptional,
   IsString,
+  Max,
+  Min,
 } from "class-validator";
 import { CampaignStatus } from "@repo/database";
-import { trimString, trimStringToNull } from "./create-campaign.dto.js";
+import {
+  DUPLICATION_THRESHOLD_MESSAGE,
+  DUPLICATION_THRESHOLD_OPTIONS,
+  trimString,
+  trimStringToNull,
+} from "./create-campaign.dto.js";
 
 /**
  * Body of PATCH /api/campaigns/:id — every field optional.
@@ -53,6 +61,16 @@ export class UpdateCampaignDto {
     message: "status must be one of: ACTIVE, INACTIVE",
   })
   status?: CampaignStatus;
+
+  /** Accepted duplication %. See CreateCampaignDto for why @Type is needed. */
+  @Type(() => Number)
+  @IsOptional()
+  @IsNumber(DUPLICATION_THRESHOLD_OPTIONS, {
+    message: DUPLICATION_THRESHOLD_MESSAGE,
+  })
+  @Min(0, { message: DUPLICATION_THRESHOLD_MESSAGE })
+  @Max(100, { message: DUPLICATION_THRESHOLD_MESSAGE })
+  duplicationThreshold?: number;
 
   /** Soft-delete flag. false hides the campaign; true restores it. */
   @IsOptional()

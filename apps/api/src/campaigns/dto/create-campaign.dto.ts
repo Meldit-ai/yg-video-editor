@@ -1,6 +1,29 @@
-import { Transform, type TransformFnParams } from "class-transformer";
-import { IsEnum, IsNotEmpty, IsOptional, IsString } from "class-validator";
+import { Transform, Type, type TransformFnParams } from "class-transformer";
+import {
+  IsEnum,
+  IsNotEmpty,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Max,
+  Min,
+} from "class-validator";
 import { CampaignStatus } from "@repo/database";
+
+/**
+ * Shared by create and update.
+ *
+ * `maxDecimalPlaces` is deliberately absent: class-validator 0.15 implements it
+ * as a string split that throws on values below 1e-6 — see
+ * IsAtMostTwoDecimalPlaces in users/dto/create-user.dto.ts.
+ */
+export const DUPLICATION_THRESHOLD_OPTIONS = {
+  allowNaN: false,
+  allowInfinity: false,
+} as const;
+
+export const DUPLICATION_THRESHOLD_MESSAGE =
+  "duplicationThreshold must be a number between 0 and 100";
 
 /** Trims a string value, leaving non-strings untouched for the validators. */
 export const trimString = ({ value }: TransformFnParams): unknown =>
@@ -62,4 +85,19 @@ export class CreateCampaignDto {
     message: "status must be one of: ACTIVE, INACTIVE",
   })
   status?: CampaignStatus;
+
+  /**
+   * Accepted duplication %. Omitted falls back to the column default (90).
+   *
+   * @Type is required: the campaign form posts this as a string, and @IsNumber
+   * rejects strings.
+   */
+  @Type(() => Number)
+  @IsOptional()
+  @IsNumber(DUPLICATION_THRESHOLD_OPTIONS, {
+    message: DUPLICATION_THRESHOLD_MESSAGE,
+  })
+  @Min(0, { message: DUPLICATION_THRESHOLD_MESSAGE })
+  @Max(100, { message: DUPLICATION_THRESHOLD_MESSAGE })
+  duplicationThreshold?: number;
 }

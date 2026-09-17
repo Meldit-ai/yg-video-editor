@@ -44,6 +44,8 @@ model User {
   /// an admin can submit too, but the workflow is the editor's.
   submissions VideoSubmission[]
 
+  /// Vendor shares this user sent.
+
   @@index([active])
 }
 
@@ -62,6 +64,10 @@ model Campaign {
   trackerCampaignId   String?
   trackerCampaignName String?
 
+  /// Accepted duplication %, 0-100. A submission at or above it is flagged,
+  /// never blocked. Defaults to 90 — the engine's MATCH band floor.
+  duplicationThreshold Float @default(90)
+
   /// Soft-delete flag — see User.active. Distinct from `status`: a campaign
   /// can be INACTIVE (paused) while still active (not deleted).
   active Boolean @default(true)
@@ -74,6 +80,10 @@ model Campaign {
 
   /// Duplicate-detection runs over this campaign's submissions.
   comparisons VideoComparison[]
+
+  /// Vendor shares sent from this campaign's feed.
+
+  /// Instagram reels pulled from the tracker, and the runs matching against them.
 
   @@index([active])
   @@index([status])
@@ -107,6 +117,25 @@ model VideoSubmission {
   /// client. Int is deliberate: uploads are capped below 2 GB.
   sizeBytes Int
 
+  /// Highest score against any other video on the campaign, 0-100. Max not
+  /// mean: a video 95% identical to one other and unrelated to eight more
+  /// averages to ~12% and reads clean. Null = not compared yet, 0 = compared
+  /// and matched nothing.
+  duplicationScore Float?
+
+  /// Mean over the same pairs. Display only — the editor's average duplicacy.
+  averageDuplicationScore Float?
+
+  /// What it scored highest against, for "duplicate of X". A plain id, so it
+  /// survives that submission being withdrawn.
+  topMatchSubmissionId String?
+
+  /// Whether `duplicationScore` met the campaign threshold when the run closed.
+  /// Stored, so a later threshold change does not rewrite past conclusions.
+  overThreshold Boolean @default(false)
+
+  duplicationCheckedAt DateTime?
+
   /// Soft-delete flag — see User.active. A deleted submission keeps its object
   /// in the bucket; nothing here ever removes bytes.
   active Boolean @default(true)
@@ -121,9 +150,12 @@ model VideoSubmission {
   /// twice; which side a video lands on carries no meaning, so read both.
   comparisonPairsA VideoComparisonPair[] @relation("ComparisonPairA")
   comparisonPairsB VideoComparisonPair[] @relation("ComparisonPairB")
+  /// Reel matches this video is one side of.
 
   @@index([campaignId, active])
   @@index([editorId])
+  /// Backs the campaign feed's most-original-first ordering.
+  @@index([campaignId, active, duplicationScore])
 }
 
 /// Outcome band for one compared pair, straight from the engine's own bands:
@@ -347,6 +379,8 @@ model Vendor {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  /// Shares addressed to this vendor.
 
   @@index([active])
 }
