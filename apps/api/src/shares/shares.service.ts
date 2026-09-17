@@ -18,7 +18,24 @@ import {
 
 /** The template used when a vendor's 24-hour window is shut. */
 const TEMPLATE_NAME = process.env.WHATSAPP_TEMPLATE_NAME ?? "vendor_review_request";
-const TEMPLATE_LANGUAGE = process.env.WHATSAPP_TEMPLATE_LANGUAGE ?? "en";
+
+/**
+ * Language codes to try, in order.
+ *
+ * Meta treats every translation as its own template, and reports an
+ * unapproved one as "does not exist in <code>" rather than "not approved yet"
+ * — so a single hard-coded code fails the moment that variant is still in
+ * review while another is live. Trying both makes approval order irrelevant.
+ */
+const TEMPLATE_LANGUAGES = (
+  process.env.WHATSAPP_TEMPLATE_LANGUAGES ?? "en_US,en"
+)
+  .split(",")
+  .map((code) => code.trim())
+  .filter((code) => code.length > 0);
+
+/** Meta's code for "no such template in that language". */
+const TEMPLATE_MISSING_CODE = 132001;
 
 /**
  * Meta's "message outside the 24-hour window" codes. Hitting one is not a
@@ -201,6 +218,39 @@ export class SharesService {
     }
   }
 
+  /**
+   * The template in whichever approved translation exists.
+   *
+   * Reports the LAST failure rather than the first: if no variant is approved
+   * yet, "does not exist in en" is the useful message, not a stale error from
+   * a code nobody configured.
+   */
+  private async sendTemplateInAnyLanguage(
+    waNumber: string,
+    params: readonly string[],
+  ) {
+    let lastError: unknown;
+    for (const language of TEMPLATE_LANGUAGES) {
+      try {
+        return await this.whatsapp.sendTemplate(
+          waNumber,
+          TEMPLATE_NAME,
+          language,
+          params,
+        );
+      } catch (caught) {
+        lastError = caught;
+        const missing =
+          caught instanceof WhatsAppError &&
+          caught.code === TEMPLATE_MISSING_CODE;
+        // Anything else — a bad number, a revoked token — fails the same way
+        // in every language, so trying the next one only hides it.
+        if (!missing) throw caught;
+      }
+    }
+    throw lastError;
+  }
+
   private async sendOne(
     recipientId: string,
     waNumber: string,
@@ -229,17 +279,12 @@ export class SharesService {
           (caught instanceof WhatsAppError && isOutsideWindow(caught));
         if (!outsideWindow) throw caught;
         usedTemplate = true;
-        result = await this.whatsapp.sendTemplate(
-          waNumber,
-          TEMPLATE_NAME,
-          TEMPLATE_LANGUAGE,
-          [
-            context.vendorName,
-            String(context.videoCount),
-            context.campaignTitle,
-            context.firstLink,
-          ],
-        );
+        result = await this.sendTemplateInAnyLanguage(waNumber, [
+          context.vendorName,
+          String(context.videoCount),
+          context.campaignTitle,
+          context.firstLink,
+        ]);
       }
 
       await this.prisma.client.vendorShareRecipient.update({
