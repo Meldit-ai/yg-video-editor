@@ -44,6 +44,9 @@ model User {
   /// an admin can submit too, but the workflow is the editor's.
   submissions VideoSubmission[]
 
+  /// Vendor shares this user sent.
+  vendorShares VendorShare[] @relation("VendorShareAuthor")
+
   @@index([active])
 }
 
@@ -78,6 +81,9 @@ model Campaign {
 
   /// Duplicate-detection runs over this campaign's submissions.
   comparisons VideoComparison[]
+
+  /// Vendor shares sent from this campaign's feed.
+  vendorShares VendorShare[]
 
   @@index([active])
   @@index([status])
@@ -373,5 +379,82 @@ model Vendor {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// Shares addressed to this vendor.
+  shareRecipients VendorShareRecipient[]
+
   @@index([active])
+}
+
+/// Outcome of one vendor's copy of a share.
+enum VendorShareStatus {
+  PENDING
+  SENT
+  /// Delivered confirmed by a Meta status webhook.
+  DELIVERED
+  FAILED
+  /// No usable WhatsApp number — never attempted. See common/phone.ts.
+  UNREACHABLE
+}
+
+/// One "send these videos to these vendors" action by an admin.
+model VendorShare {
+  id String @id @default(cuid())
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id])
+
+  createdById String
+  createdBy   User   @relation("VendorShareAuthor", fields: [createdById], references: [id])
+
+  /// What the admin typed, before links were appended.
+  messageBody String
+
+  /// The submissions shared, in the order they were selected. Plain ids: the
+  /// record of what was sent must survive a submission being withdrawn.
+  submissionIds String[]
+
+  active Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  recipients VendorShareRecipient[]
+
+  @@index([campaignId, active, createdAt])
+  @@index([createdById])
+}
+
+/// One vendor's copy of a share — the unit that actually gets sent and retried.
+model VendorShareRecipient {
+  id String @id @default(cuid())
+
+  shareId String
+  share   VendorShare @relation(fields: [shareId], references: [id], onDelete: Cascade)
+
+  vendorId String
+  vendor   Vendor @relation(fields: [vendorId], references: [id])
+
+  /// The number actually dialled: international digits, no "+". Null when the
+  /// stored number could not be resolved, which is what UNREACHABLE means.
+  waNumber String?
+
+  status VendorShareStatus @default(PENDING)
+
+  /// Meta's message id, for matching up status webhooks later.
+  providerMessageId String?
+  /// Whether this went out as free text or fell back to the template, so a
+  /// reader can tell why the wording differs from what the admin typed.
+  usedTemplate Boolean @default(false)
+
+  errorMessage String?
+  attempts     Int     @default(0)
+  sentAt       DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([shareId, vendorId])
+  @@index([vendorId])
+  /// The queue read: anything still owed a send, oldest first.
+  @@index([status, createdAt])
 }
