@@ -46,6 +46,8 @@ export interface Campaign {
    * out of it — this keeps the label readable when that happens.
    */
   trackerCampaignName: string | null
+  /** Accepted duplication %. A submission at or above it is flagged, not blocked. */
+  duplicationThreshold: number
   /** Soft-delete flag: false means the campaign was deleted. */
   active: boolean
   createdAt: string
@@ -67,6 +69,16 @@ export interface VideoSubmission {
   editorId: string
   /** Who submitted it. An editor only ever sees their own rows. */
   editorName: string
+  /**
+   * Duplication roll-up. Null means not compared yet; 0 means compared and
+   * matched nothing — the two are different states, so do not coalesce them.
+   */
+  duplicationScore: number | null
+  averageDuplicationScore: number | null
+  topMatchSubmissionId: string | null
+  /** Whether it met the campaign's threshold when the run closed. */
+  overThreshold: boolean
+  duplicationCheckedAt: string | null
   /**
    * Time-limited URL for a <video> element. Signed per response — it is not a
    * stable address, and it stops working at `playbackExpiresAt`.
@@ -271,3 +283,85 @@ export interface VendorImportResult {
   /** Every non-blank row, in sheet order. */
   rows: VendorImportRowResult[]
 }
+
+/* ---------------------------------------------------------- dashboard */
+
+/** Mirrors apps/api/src/dashboard/dashboard.types.ts. */
+export interface DashboardCampaignStat {
+  campaignId: string
+  campaignTitle: string
+  videos: number
+  duplicates: number
+}
+
+export interface EditorDashboardStats {
+  videosUploaded: number
+  duplicateCount: number
+  /** Null when nothing has been compared yet — not the same as zero. */
+  averageDuplicationScore: number | null
+  campaignsContributed: number
+  /**
+   * Null when no rate is agreed. Render that as "Rate not set", never as 0:
+   * nothing models approval or payment, so this is the value of work
+   * submitted rather than money owed.
+   */
+  estimatedEarnings: number | null
+  rateCard: number | null
+  perCampaign: DashboardCampaignStat[]
+}
+
+/* ------------------------------------------------------ vendor shares */
+
+/** Mirrors apps/api/src/shares/shares.types.ts. */
+export type VendorShareStatus =
+  | "PENDING"
+  | "SENT"
+  | "DELIVERED"
+  | "FAILED"
+  /** No usable WhatsApp number — never attempted. */
+  | "UNREACHABLE"
+
+export interface VendorShareRecipient {
+  id: string
+  vendorId: string
+  vendorName: string
+  waNumber: string | null
+  status: VendorShareStatus
+  /** True when the 24-hour window was shut and the template was used. */
+  usedTemplate: boolean
+  errorMessage: string | null
+  sentAt: string | null
+}
+
+export interface VendorShare {
+  id: string
+  campaignId: string
+  createdById: string
+  createdByName: string
+  messageBody: string
+  submissionIds: string[]
+  createdAt: string
+  recipients: VendorShareRecipient[]
+}
+
+/** A vendor in the share picker, with reachability already resolved. */
+export interface ShareableVendor {
+  id: string
+  name: string
+  phoneNumber: string
+  /** False when the stored number cannot be dialled — shown disabled. */
+  reachable: boolean
+}
+
+/**
+ * Share limits. Mirrors create-share.dto.ts — keep the two in step.
+ *
+ * Both come from WhatsApp's own ceilings rather than taste: the body it will
+ * accept is 4096 characters, which is about 24 links once the note has had its
+ * room, and the recipient cap is Meta's messaging tier for an unverified
+ * business. The server checks the tier against what has actually been sent in
+ * the last 24 hours, which the browser cannot know — so a share inside these
+ * numbers can still be refused, and the dialog reports that when it happens.
+ */
+export const MAX_SHARE_MEDIA = 24
+export const MAX_SHARE_VENDORS = 250

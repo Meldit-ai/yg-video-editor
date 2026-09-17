@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/card"
 import { CampaignDetailPage } from "@/pages/campaign-detail-page"
 import { EditorDashboardPage } from "@/pages/editor-dashboard-page"
+import { CampaignFeedPage } from "@/pages/campaign-feed-page"
 import { CampaignsPage } from "@/pages/campaigns-page"
 import { LoginPage } from "@/pages/login-page"
 import { NoAccessPage } from "@/pages/no-access-page"
@@ -65,6 +66,9 @@ const router = createBrowserRouter([
           {
             element: <AdminRoute />,
             children: [
+              // Admin-only: the feed shows every editor's cuts, which an
+              // editor is never allowed to see.
+              { path: "campaigns/:id/feed", element: <CampaignFeedPage /> },
               { path: "vendors", element: <VendorsPage /> },
               { path: "users", element: <UsersPage /> },
             ],

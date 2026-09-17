@@ -2,6 +2,9 @@ import { useEffect, useState } from "react"
 import type { ReactNode } from "react"
 import {
   ArrowLeftIcon,
+  ArrowRightIcon,
+  LayersIcon,
+  SparklesIcon,
   RotateCwIcon,
   SearchXIcon,
   TriangleAlertIcon,
@@ -9,6 +12,7 @@ import {
 import { motion, useReducedMotion } from "motion/react"
 import { Link, useParams } from "react-router-dom"
 
+import { useAuth } from "@/auth/auth-context"
 import { CampaignSubmissions } from "@/components/campaign-submissions"
 import { EmptyState } from "@/components/empty-state"
 import { MetaDivider, PageHeader } from "@/components/page-header"
@@ -169,6 +173,9 @@ export function CampaignDetailPage() {
   const [attempt, setAttempt] = useState(0)
   const [state, setState] = useState<LoadState>({ status: "loading" })
   const reduceMotion = useReducedMotion()
+  const { user } = useAuth()
+  // Presentation only — the API scopes what each role can actually read.
+  const isAdmin = user?.role === "ADMIN"
 
   useEffect(() => {
     if (id === undefined || id.length === 0) {
@@ -262,7 +269,22 @@ export function CampaignDetailPage() {
       transition={{ duration: reduceMotion ? 0 : 0.15, ease: "easeOut" }}
       className="flex w-full max-w-3xl flex-col gap-4"
     >
-      <BackLink />
+      {/* The feed sits on this row rather than below the page: a campaign can
+          carry hundreds of videos, and a link under them is a link nobody
+          reaches. Admin-only — an editor is never shown other people's cuts. */}
+      <div className="flex items-center justify-between gap-3">
+        <BackLink />
+        {isAdmin && (
+          <Link
+            to={`/campaigns/${campaign.id}/feed`}
+            className="group -mr-1.5 inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[13px] text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
+          >
+            <LayersIcon className="size-3.5" />
+            Campaign feed
+            <ArrowRightIcon className="size-3.5 transition-transform group-hover:translate-x-0.5" />
+          </Link>
+        )}
+      </div>
 
       <PageHeader
         title={campaign.title}
