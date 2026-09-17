@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { ChangeEvent, DragEvent } from "react"
 import {
   DownloadIcon,
@@ -123,6 +123,22 @@ export function CampaignSubmissions({ campaignId }: CampaignSubmissionsProps) {
   // per-video result a card's status strip opens.
   const [openPair, setOpenPair] = useState<ComparisonPair | null>(null)
   const [openResult, setOpenResult] = useState<VideoSubmission | null>(null)
+
+  // "Duplicate of <which video>": the parent is looked up in this list. An
+  // editor's list holds only their own videos, so a parent that belongs to
+  // someone else resolves to nothing and is named as "another submission" —
+  // the same line the API draws.
+  const byId = useMemo(
+    () => new Map(items.map((item) => [item.id, item])),
+    [items],
+  )
+  const parentOf = useCallback(
+    (submission: VideoSubmission): VideoSubmission | null =>
+      submission.topMatchSubmissionId === null
+        ? null
+        : (byId.get(submission.topMatchSubmissionId) ?? null),
+    [byId],
+  )
 
   const [upload, setUpload] = useState<UploadState | null>(null)
   const [isDragging, setDragging] = useState(false)
@@ -412,7 +428,7 @@ export function CampaignSubmissions({ campaignId }: CampaignSubmissionsProps) {
                   src={src}
                   isUnplayable={unplayable.has(src)}
                   showEditor={isAdmin}
-                  check={comparison.checkFor(submission.id)}
+                  check={comparison.checkFor(submission, parentOf(submission))}
                   onOpenResult={() => setOpenResult(submission)}
                   onRemove={() => setPendingDelete(submission)}
                   onPlaybackError={() =>
@@ -439,7 +455,11 @@ export function CampaignSubmissions({ campaignId }: CampaignSubmissionsProps) {
 
       <SubmissionResultDialog
         submission={openResult}
-        check={openResult === null ? null : comparison.checkFor(openResult.id)}
+        check={
+          openResult === null
+            ? null
+            : comparison.checkFor(openResult, parentOf(openResult))
+        }
         state={comparison}
         onClose={() => setOpenResult(null)}
       />

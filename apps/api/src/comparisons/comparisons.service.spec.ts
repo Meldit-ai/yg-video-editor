@@ -1,19 +1,12 @@
-import { BadRequestException, Logger } from "@nestjs/common";
+import { BadRequestException } from "@nestjs/common";
 import { ComparisonStatus, ComparisonVerdict } from "@repo/database";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PrismaService } from "../prisma/prisma.service.js";
-import type { StorageService } from "../storage/storage.service.js";
-import type { ComparisonEngineClient } from "./comparison-engine.client.js";
+import type { UniquenessService } from "../uniqueness/uniqueness.service.js";
 import type { EngineResult } from "./comparison-engine.types.js";
-import {
-  ComparisonsService,
-  buildGroups,
-  pairKeyOf,
-  planBatches,
-  resolveResult,
-  rollUpScores,
-} from "./comparisons.service.js";
+import { ComparisonsService, buildGroups } from "./comparisons.service.js";
 import type { ComparisonPairDto } from "./comparisons.types.js";
+import { pairKeyOf, resolveResult } from "./engine-result.js";
 
 /* ------------------------------------------------------ pure helpers */
 
@@ -208,103 +201,9 @@ describe("resolveResult", () => {
   });
 });
 
-describe("planBatches", () => {
-  it("sends everything in one call when it fits", () => {
-    expect(planBatches(["a", "b", "c"], 4)).toEqual([["a", "b", "c"]]);
-    expect(planBatches(["a", "b", "c", "d"], 4)).toEqual([
-      ["a", "b", "c", "d"],
-    ]);
-  });
-
-  it("never exceeds the cap, and covers every pair", () => {
-    // The property that matters: whatever the split, no pair of videos is
-    // left uncompared. Naive chunking fails this at the first boundary.
-    for (const total of [5, 6, 7, 8, 9, 12, 20]) {
-      for (const cap of [4, 6]) {
-        const ids = Array.from({ length: total }, (_, i) => `sub_${i}`);
-        const batches = planBatches(ids, cap);
-
-        const covered = new Set<string>();
-        for (const batch of batches) {
-          expect(batch.length).toBeLessThanOrEqual(cap);
-          for (let i = 0; i < batch.length; i += 1) {
-            for (let j = i + 1; j < batch.length; j += 1) {
-              covered.add(pairKeyOf(batch[i]!, batch[j]!));
-            }
-          }
-        }
-
-        expect(covered.size).toBe((total * (total - 1)) / 2);
-      }
-    }
-  });
-});
-
 describe("pairKeyOf", () => {
   it("is the same key whichever order the engine reported the two in", () => {
     expect(pairKeyOf("sub_b", "sub_a")).toBe(pairKeyOf("sub_a", "sub_b"));
-  });
-});
-
-describe("rollUpScores", () => {
-  const pair = (a: string, b: string, score: number) => ({
-    aSubmissionId: a,
-    bSubmissionId: b,
-    score,
-  });
-  const byId = (rows: ReturnType<typeof rollUpScores>, id: string) =>
-    rows.find((row) => row.submissionId === id)!;
-
-  it("takes the worst match, not the average", () => {
-    // 95 against one video, nothing against three others: the mean would be
-    // ~24 and read as clean, but this video IS a duplicate of that one.
-    const rows = rollUpScores(
-      ["a", "b", "c", "d"],
-      [pair("a", "b", 95), pair("a", "c", 1), pair("a", "d", 1)],
-      90,
-    );
-    expect(byId(rows, "a").duplicationScore).toBe(95);
-    expect(byId(rows, "a").averageDuplicationScore).toBe(32.3);
-    expect(byId(rows, "a").overThreshold).toBe(true);
-  });
-
-  it("scores a submission that matched nothing as 0, not null", () => {
-    const rows = rollUpScores(["a", "b"], [pair("a", "b", 1)], 90);
-    expect(byId(rows, "a").duplicationScore).toBe(1);
-    expect(byId(rows, "a").overThreshold).toBe(false);
-  });
-
-  it("scores a submission that appears in no pair at all", () => {
-    const rows = rollUpScores(["a", "b"], [], 90);
-    expect(byId(rows, "a")).toMatchObject({
-      duplicationScore: 0,
-      averageDuplicationScore: 0,
-      topMatchSubmissionId: null,
-      overThreshold: false,
-    });
-  });
-
-  it("names the submission behind the worst score on both sides", () => {
-    const rows = rollUpScores(
-      ["a", "b", "c"],
-      [pair("a", "b", 40), pair("a", "c", 88)],
-      90,
-    );
-    expect(byId(rows, "a").topMatchSubmissionId).toBe("c");
-    // b and c each saw only a, so that is what they point back at.
-    expect(byId(rows, "b").topMatchSubmissionId).toBe("a");
-    expect(byId(rows, "c").topMatchSubmissionId).toBe("a");
-  });
-
-  it("flags a score exactly on the threshold", () => {
-    const rows = rollUpScores(["a", "b"], [pair("a", "b", 20)], 20);
-    expect(byId(rows, "a").overThreshold).toBe(true);
-  });
-
-  it("ignores pairs naming a submission outside the run", () => {
-    const rows = rollUpScores(["a"], [pair("a", "ghost", 70)], 90);
-    expect(rows).toHaveLength(1);
-    expect(byId(rows, "a").duplicationScore).toBe(70);
   });
 });
 
@@ -362,59 +261,27 @@ describe("buildGroups", () => {
 
 /* ------------------------------------------------------------ the service */
 
-const submissionDelegate = { findMany: vi.fn() };
-const comparisonDelegate = {
-  create: vi.fn(),
-  updateMany: vi.fn(),
-  findMany: vi.fn(),
-  findFirst: vi.fn(),
-  findUnique: vi.fn(),
-  update: vi.fn(),
-};
-const entryDelegate = { updateMany: vi.fn() };
-const pairDelegate = {
-  deleteMany: vi.fn(),
-  createMany: vi.fn(),
-  findMany: vi.fn(),
-};
-const jobDelegate = {
-  findMany: vi.fn(),
-  update: vi.fn(),
-  updateMany: vi.fn(),
-};
+const submissionDelegate = { count: vi.fn() };
+const comparisonDelegate = { findFirst: vi.fn() };
 
 const client = {
   videoSubmission: submissionDelegate,
   videoComparison: comparisonDelegate,
-  videoComparisonEntry: entryDelegate,
-  videoComparisonPair: pairDelegate,
-  videoComparisonJob: jobDelegate,
-  // Runs the callback against the same delegates — enough to assert what a
-  // transaction would have written, without a database.
-  $transaction: <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
-    work(client),
 };
-
 const prisma = { client } as unknown as PrismaService;
 
-const storageMock = {
-  publicObjectUrl: vi.fn((key: string) => `https://bucket.example/${key}`),
-};
-const storage = storageMock as unknown as StorageService;
-
-const engineMock = { submit: vi.fn(), fetchJob: vi.fn() };
-const engine = engineMock as unknown as ComparisonEngineClient;
+const uniquenessMock = { rebuild: vi.fn() };
+const uniqueness = uniquenessMock as unknown as UniquenessService;
 
 function comparisonRow(overrides: Record<string, unknown> = {}) {
   return {
     id: "cmpr_1",
     campaignId: "cmp_1",
-    jobs: [],
     status: ComparisonStatus.QUEUED,
     triggerSubmissionId: null,
     stage: null,
     pairsDone: 0,
-    pairsTotal: 1,
+    pairsTotal: 0,
     videoCount: 2,
     flaggedPairCount: 0,
     engineVersion: null,
@@ -427,333 +294,35 @@ function comparisonRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
-describe("ComparisonsService.runForCampaign", () => {
+describe("ComparisonsService.rebuild", () => {
   let service: ComparisonsService;
 
   beforeEach(() => {
-    vi.resetAllMocks();
-    storageMock.publicObjectUrl.mockImplementation(
-      (key: string) => `https://bucket.example/${key}`,
-    );
-    comparisonDelegate.create.mockResolvedValue(comparisonRow());
-    jobDelegate.findMany.mockResolvedValue([]);
-    comparisonDelegate.updateMany.mockResolvedValue({ count: 0 });
-    service = new ComparisonsService(prisma, storage, engine);
-  });
-
-  afterEach(() => {
-    // A started run leaves a poller sleeping; this is the shutdown hook that
-    // stops it, and without it the suite would hold a timer open.
-    service.onModuleDestroy();
+    vi.clearAllMocks();
+    service = new ComparisonsService(prisma, uniqueness);
   });
 
   it("refuses a campaign with nothing to compare against", async () => {
-    submissionDelegate.findMany.mockResolvedValue([
-      { id: "sub_a", objectKey: "campaigns/cmp_1/a.mp4" },
-    ]);
+    submissionDelegate.count.mockResolvedValue(1);
 
-    await expect(service.runForCampaign("cmp_1")).rejects.toBeInstanceOf(
+    await expect(service.rebuild("cmp_1")).rejects.toBeInstanceOf(
       BadRequestException,
     );
-    expect(engineMock.submit).not.toHaveBeenCalled();
+    expect(uniquenessMock.rebuild).not.toHaveBeenCalled();
   });
 
-  it("submits every active video on the campaign, as plain object URLs", async () => {
-    submissionDelegate.findMany.mockResolvedValue([
-      { id: "sub_a", objectKey: "campaigns/cmp_1/a.mp4" },
-      { id: "sub_b", objectKey: "campaigns/cmp_1/b.mp4" },
-      { id: "sub_c", objectKey: "campaigns/cmp_1/c.mp4" },
-    ]);
-    engineMock.submit.mockResolvedValue("job_1");
+  it("replays the campaign through the classifier and returns the run to poll", async () => {
+    submissionDelegate.count.mockResolvedValue(3);
+    uniquenessMock.rebuild.mockResolvedValue("cmpr_1");
+    comparisonDelegate.findFirst.mockResolvedValue(comparisonRow());
 
-    await service.runForCampaign("cmp_1", "sub_c");
+    const summary = await service.rebuild("cmp_1");
 
-    // Every video, not just the new one — the engine fans out to all pairs.
-    // Three fits inside one call, so there is exactly one request.
-    expect(engineMock.submit).toHaveBeenCalledTimes(1);
-    expect(engineMock.submit).toHaveBeenCalledWith([
-      "https://bucket.example/campaigns/cmp_1/a.mp4",
-      "https://bucket.example/campaigns/cmp_1/b.mp4",
-      "https://bucket.example/campaigns/cmp_1/c.mp4",
-    ]);
-    expect(submissionDelegate.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { campaignId: "cmp_1", active: true },
-      }),
-    );
-  });
-
-  it("splits a campaign past the engine's URL cap into covering batches", async () => {
-    // Five videos, four URLs per call: one request would be a 422, and naive
-    // chunking would stop comparing videos that landed in different chunks.
-    submissionDelegate.findMany.mockResolvedValue(
-      ["a", "b", "c", "d", "e"].map((key) => ({
-        id: `sub_${key}`,
-        objectKey: `campaigns/cmp_1/${key}.mp4`,
-      })),
-    );
-    engineMock.submit.mockResolvedValue("job_1");
-
-    await service.runForCampaign("cmp_1");
-
-    const requests = engineMock.submit.mock.calls.map(
-      (call) => call[0] as string[],
-    );
-    expect(requests).toHaveLength(3);
-    for (const urls of requests) expect(urls.length).toBeLessThanOrEqual(4);
-
-    // The point of the split: every pair still travels together somewhere.
-    const covered = new Set<string>();
-    for (const urls of requests) {
-      for (let i = 0; i < urls.length; i += 1) {
-        for (let j = i + 1; j < urls.length; j += 1) {
-          covered.add(pairKeyOf(urls[i]!, urls[j]!));
-        }
-      }
-    }
-    expect(covered.size).toBe(10); // C(5,2)
-  });
-
-  it("still records one run, with the campaign's own pair count", async () => {
-    submissionDelegate.findMany.mockResolvedValue(
-      ["a", "b", "c", "d", "e"].map((key) => ({
-        id: `sub_${key}`,
-        objectKey: `campaigns/cmp_1/${key}.mp4`,
-      })),
-    );
-    engineMock.submit.mockResolvedValue("job_1");
-
-    await service.runForCampaign("cmp_1");
-
-    expect(comparisonDelegate.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          videoCount: 5,
-          // C(5,2), not the sum over the three overlapping batches — a pair
-          // counted twice would leave the progress bar short of full.
-          pairsTotal: 10,
-        }),
-      }),
-    );
-  });
-
-  it("records the run with the pair count it expects", async () => {
-    submissionDelegate.findMany.mockResolvedValue([
-      { id: "sub_a", objectKey: "campaigns/cmp_1/a.mp4" },
-      { id: "sub_b", objectKey: "campaigns/cmp_1/b.mp4" },
-      { id: "sub_c", objectKey: "campaigns/cmp_1/c.mp4" },
-      { id: "sub_d", objectKey: "campaigns/cmp_1/d.mp4" },
-    ]);
-    engineMock.submit.mockResolvedValue("job_1");
-
-    await service.runForCampaign("cmp_1", "sub_d");
-
-    expect(comparisonDelegate.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          campaignId: "cmp_1",
-          triggerSubmissionId: "sub_d",
-          status: ComparisonStatus.QUEUED,
-          videoCount: 4,
-          // 4 videos, every combination of two.
-          pairsTotal: 6,
-          // One engine call, recorded with the videos it covers.
-          jobs: {
-            create: [
-              {
-                jobId: "job_1",
-                submissionIds: ["sub_a", "sub_b", "sub_c", "sub_d"],
-              },
-            ],
-          },
-        }),
-      }),
-    );
-  });
-
-  it("supersedes a run still in flight, so only the newest one is read", async () => {
-    submissionDelegate.findMany.mockResolvedValue([
-      { id: "sub_a", objectKey: "campaigns/cmp_1/a.mp4" },
-      { id: "sub_b", objectKey: "campaigns/cmp_1/b.mp4" },
-    ]);
-    engineMock.submit.mockResolvedValue("job_2");
-
-    await service.runForCampaign("cmp_1");
-
-    expect(comparisonDelegate.updateMany).toHaveBeenCalledWith({
-      where: {
-        campaignId: "cmp_1",
-        active: true,
-        status: {
-          in: [ComparisonStatus.QUEUED, ComparisonStatus.RUNNING],
-        },
-      },
-      data: expect.objectContaining({ status: ComparisonStatus.SUPERSEDED }),
+    expect(uniquenessMock.rebuild).toHaveBeenCalledWith("submission", "cmp_1");
+    expect(summary).toMatchObject({
+      id: "cmpr_1",
+      campaignId: "cmp_1",
+      status: ComparisonStatus.QUEUED,
     });
-  });
-
-  it("records a failed run when the engine cannot be reached", async () => {
-    const error = vi.spyOn(Logger.prototype, "error").mockImplementation(() => {});
-    submissionDelegate.findMany.mockResolvedValue([
-      { id: "sub_a", objectKey: "campaigns/cmp_1/a.mp4" },
-      { id: "sub_b", objectKey: "campaigns/cmp_1/b.mp4" },
-    ]);
-    engineMock.submit.mockRejectedValue(
-      new Error("could not reach the comparison engine at http://127.0.0.1:8080"),
-    );
-    comparisonDelegate.create.mockResolvedValue(
-      comparisonRow({
-        status: ComparisonStatus.FAILED,
-        errorMessage: "could not reach the comparison engine",
-      }),
-    );
-
-    const run = await service.runForCampaign("cmp_1");
-
-    // Written, not just logged: "the check could not start" is the answer the
-    // campaign page has to show. Silence would read as "no duplicates".
-    expect(run.status).toBe(ComparisonStatus.FAILED);
-    expect(comparisonDelegate.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          status: ComparisonStatus.FAILED,
-          errorMessage: expect.stringContaining("could not reach"),
-        }),
-      }),
-    );
-    // A failed submit must not take a healthy running job down with it.
-    expect(comparisonDelegate.updateMany).not.toHaveBeenCalled();
-    error.mockRestore();
-  });
-
-  /**
-   * Ten videos plan into C(5,2) = 10 batches at the default cap, which is more
-   * than one wave. This is the shape that used to break: every batch was fired
-   * at an engine whose queue holds ten, most came back 503, and their pairs
-   * were never compared — leaving every video on the campaign unscored.
-   */
-  function tenVideos() {
-    // Enough videos to plan into more batches than one wave carries, so the
-    // held-back pile is exercised rather than trivially empty.
-    return Array.from({ length: 30 }, (_, index) => ({
-      id: `sub_${index}`,
-      objectKey: `campaigns/cmp_1/${index}.mp4`,
-    }));
-  }
-
-  it("never puts more than the safe number of URLs in one job", async () => {
-    // The environment can ask for more than a job budget can actually score.
-    // A job's cost is quadratic in its URLs, so an over-large batch does not
-    // run slower — it times out and loses every pair in it.
-    const previous = process.env.COMPARISON_ENGINE_MAX_URLS;
-    process.env.COMPARISON_ENGINE_MAX_URLS = "10";
-    submissionDelegate.findMany.mockResolvedValue(tenVideos());
-    engineMock.submit.mockResolvedValue("job_1");
-
-    try {
-      await service.runForCampaign("cmp_1");
-
-      const sizes = engineMock.submit.mock.calls.map(
-        (call) => (call[0] as string[]).length,
-      );
-      expect(sizes.length).toBeGreaterThan(0);
-      for (const size of sizes) expect(size).toBeLessThanOrEqual(6);
-    } finally {
-      if (previous === undefined) delete process.env.COMPARISON_ENGINE_MAX_URLS;
-      else process.env.COMPARISON_ENGINE_MAX_URLS = previous;
-    }
-  });
-
-  it("hands the engine one wave and holds the rest back", async () => {
-    submissionDelegate.findMany.mockResolvedValue(tenVideos());
-    engineMock.submit.mockResolvedValue("job_1");
-
-    await service.runForCampaign("cmp_1");
-
-    // Not all ten: the engine's queue is bounded, and filling it is what made
-    // it refuse the remainder in the first place.
-    expect(engineMock.submit).toHaveBeenCalledTimes(12);
-
-    const jobs = (
-      comparisonDelegate.create.mock.calls[0]?.[0] as {
-        data: { jobs: { create: { jobId?: string }[] } };
-      }
-    ).data.jobs.create;
-
-    // All ten batches are still recorded. The four with no job id are the
-    // pending pile — a restart resumes them instead of losing them.
-    expect(jobs.length).toBeGreaterThan(12);
-    expect(jobs.filter((job) => job.jobId !== undefined)).toHaveLength(12);
-    expect(jobs.filter((job) => job.jobId === undefined)).toHaveLength(
-      jobs.length - 12,
-    );
-  });
-
-  it("does not report held-back batches as an error", async () => {
-    submissionDelegate.findMany.mockResolvedValue(tenVideos());
-    engineMock.submit.mockResolvedValue("job_1");
-
-    await service.runForCampaign("cmp_1");
-
-    // Waiting for room is queued work, not a failure. Saying otherwise would
-    // mark a perfectly healthy run partial for its whole lifetime.
-    expect(comparisonDelegate.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ errorMessage: null }),
-      }),
-    );
-  });
-
-  it("keeps a batch the engine was too busy for, rather than dropping it", async () => {
-    submissionDelegate.findMany.mockResolvedValue([
-      { id: "sub_a", objectKey: "campaigns/cmp_1/a.mp4" },
-      { id: "sub_b", objectKey: "campaigns/cmp_1/b.mp4" },
-    ]);
-    engineMock.submit.mockRejectedValue(
-      new Error("engine_busy: the queue is full"),
-    );
-
-    await service.runForCampaign("cmp_1");
-
-    // A full queue is "come back shortly". The run is still created, with the
-    // batch pending, where the old code recorded a failure and gave up.
-    expect(comparisonDelegate.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          status: ComparisonStatus.QUEUED,
-          errorMessage: null,
-          jobs: { create: [{ submissionIds: ["sub_a", "sub_b"] }] },
-        }),
-      }),
-    );
-  });
-
-  it("still fails a run the engine refused for a real reason", async () => {
-    const error = vi
-      .spyOn(Logger.prototype, "error")
-      .mockImplementation(() => {});
-    submissionDelegate.findMany.mockResolvedValue([
-      { id: "sub_a", objectKey: "campaigns/cmp_1/a.mp4" },
-      { id: "sub_b", objectKey: "campaigns/cmp_1/b.mp4" },
-    ]);
-    engineMock.submit.mockRejectedValue(new Error("422 unprocessable entity"));
-    comparisonDelegate.create.mockResolvedValue(
-      comparisonRow({ status: ComparisonStatus.FAILED }),
-    );
-
-    // The busy path must not swallow genuine faults along with it.
-    const run = await service.runForCampaign("cmp_1");
-    expect(run.status).toBe(ComparisonStatus.FAILED);
-    error.mockRestore();
-  });
-
-  it("never lets a comparison failure surface on the upload path", async () => {
-    const warn = vi.spyOn(Logger.prototype, "warn").mockImplementation(() => {});
-    submissionDelegate.findMany.mockRejectedValue(new Error("database is down"));
-
-    // Synchronous by design — the upload response does not wait for this.
-    expect(() => service.triggerAfterUpload("cmp_1", "sub_a")).not.toThrow();
-    await vi.waitFor(() => expect(warn).toHaveBeenCalled());
-    warn.mockRestore();
   });
 });

@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
 import type { PrismaService } from "../prisma/prisma.service.js";
 import type { TrackerService } from "../tracker/tracker.service.js";
+import type { UniquenessService } from "../uniqueness/uniqueness.service.js";
 import { CampaignsService } from "./campaigns.service.js";
 
 /** Mocked prisma.client.campaign delegate — no Nest DI, no database. */
@@ -19,9 +20,17 @@ const campaignDelegate = {
   delete: vi.fn(),
 };
 
-const prisma = {
-  client: { campaign: campaignDelegate },
-} as unknown as PrismaService;
+const client = {
+  campaign: campaignDelegate,
+  // Runs the callback against the same delegates — enough to assert what a
+  // transaction would have written, without a database.
+  $transaction: <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+    work(client),
+};
+const prisma = { client } as unknown as PrismaService;
+
+const uniquenessMock = { reclassifyForThreshold: vi.fn() };
+const uniqueness = uniquenessMock as unknown as UniquenessService;
 
 /** Plain stub for the tracker — the upstream is never reached from here. */
 const trackerMock = {
@@ -40,6 +49,7 @@ const row = (overrides: Partial<Campaign> = {}): Campaign =>
     status: CampaignStatus.ACTIVE,
     trackerCampaignId: null,
     trackerCampaignName: null,
+    duplicationThreshold: 90,
     active: true,
     createdAt: new Date("2026-09-01T00:00:00.000Z"),
     updatedAt: new Date("2026-09-01T00:00:00.000Z"),
@@ -69,7 +79,7 @@ describe("CampaignsService", () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
-    service = new CampaignsService(prisma, tracker);
+    service = new CampaignsService(prisma, tracker, uniqueness);
   });
 
   describe("create", () => {
@@ -268,6 +278,33 @@ describe("CampaignsService", () => {
         where: { id: "cmp_1" },
         data: { status: CampaignStatus.INACTIVE },
       });
+    });
+
+    it("re-labels the campaign's videos when the threshold changes, in the same transaction", async () => {
+      campaignDelegate.findFirst.mockResolvedValue(row());
+      campaignDelegate.update.mockResolvedValue(row({ duplicationThreshold: 40 }));
+
+      await service.update("cmp_1", { duplicationThreshold: 40 });
+
+      expect(campaignDelegate.update).toHaveBeenCalledWith({
+        where: { id: "cmp_1" },
+        data: { duplicationThreshold: 40 },
+      });
+      expect(uniquenessMock.reclassifyForThreshold).toHaveBeenCalledWith(
+        client,
+        "cmp_1",
+        40,
+      );
+    });
+
+    it("leaves the labels alone when the threshold is unchanged or omitted", async () => {
+      campaignDelegate.findFirst.mockResolvedValue(row());
+      campaignDelegate.update.mockResolvedValue(row());
+
+      await service.update("cmp_1", { duplicationThreshold: 90 });
+      await service.update("cmp_1", { title: "Renamed" });
+
+      expect(uniquenessMock.reclassifyForThreshold).not.toHaveBeenCalled();
     });
 
     it("clears a nullable field when it is explicitly null", async () => {

@@ -2,6 +2,7 @@
  * Wire types for video submissions. Mirrored in apps/web/src/lib/types.ts —
  * keep the two in step.
  */
+import type { Uniqueness } from "@repo/database";
 
 /**
  * The bit of the multer file we use, after the S3 storage engine has run.
@@ -37,9 +38,15 @@ export interface VideoSubmissionDto {
   editorId: string;
   editorName: string;
   /**
-   * Duplication roll-up, written when a comparison run over this campaign
-   * finishes. Null means not compared yet; 0 means compared and matched
-   * nothing. See rollUpScores in comparisons.service.ts.
+   * Where this video stands against the campaign's baseline — null while it
+   * is still to be checked, or when the engine could not read it (then
+   * `duplicationCheckedAt` is set). See VideoSubmission.uniqueness.
+   */
+  uniqueness: Uniqueness | null;
+  /**
+   * Match value: the highest max(score, containment) against any baseline
+   * video. Null means not checked yet; 0 means there was nothing to compare
+   * against.
    */
   duplicationScore: number | null;
   averageDuplicationScore: number | null;

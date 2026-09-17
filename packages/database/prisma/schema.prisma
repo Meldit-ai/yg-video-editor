@@ -94,6 +94,24 @@ model Campaign {
   @@index([trackerCampaignId])
 }
 
+/// Where a video stands against everything that arrived on its campaign before
+/// it. Assigned once on arrival by comparing the video against the campaign's
+/// *baseline* (its UNIQUE and PARTIAL videos — DUPLICATEs are never compared
+/// against), and revisited only on a threshold edit, the withdrawal of its
+/// parent, or a rebuild. Declaration order matters: Postgres sorts an enum by
+/// it, and the feed orders UNIQUE, PARTIAL, DUPLICATE.
+/// See docs/superpowers/specs/2026-09-17-incremental-duplicate-detection-design.md
+enum Uniqueness {
+  /// Nothing in the baseline resembled it (match value below 25).
+  UNIQUE
+  /// Resembles a baseline video, but below the campaign threshold. Joins the
+  /// baseline, because the part it does not share is footage nobody else has.
+  PARTIAL
+  /// At or above the campaign threshold against a baseline video. Not in the
+  /// baseline: everything in it is already in its parent.
+  DUPLICATE
+}
+
 /// A video an editor has handed in against a campaign brief. The file itself
 /// lives in Hetzner object storage; this row is the record of it, and
 /// `objectKey` is the only link between the two.
@@ -121,21 +139,31 @@ model VideoSubmission {
   /// client. Int is deliberate: uploads are capped below 2 GB.
   sizeBytes Int
 
-  /// Highest score against any other video on the campaign, 0-100. Max not
-  /// mean: a video 95% identical to one other and unrelated to eight more
-  /// averages to ~12% and reads clean. Null = not compared yet, 0 = compared
-  /// and matched nothing.
+  /// The label, or null. Read together with `duplicationCheckedAt`:
+  /// null + null = pending (will be classified by the next sweep);
+  /// null + set  = unreadable (the engine could not fingerprint it — terminal
+  ///               until a rebuild);
+  /// set  + set  = labelled.
+  uniqueness Uniqueness?
+
+  /// Match value, 0-100: the highest max(score, containment) against any
+  /// baseline video. Max not mean: a video 95% identical to one other and
+  /// unrelated to eight more averages to ~12% and reads clean. Stored even
+  /// when below 25 (so a threshold edit can re-label without the engine);
+  /// 0 only when there was nothing to compare against. Null = not compared.
   duplicationScore Float?
 
   /// Mean over the same pairs. Display only — the editor's average duplicacy.
   averageDuplicationScore Float?
 
-  /// What it scored highest against, for "duplicate of X". A plain id, so it
-  /// survives that submission being withdrawn.
+  /// The baseline video it scored highest against — the parent, when the
+  /// label is not UNIQUE. Set whenever the baseline was non-empty, so that a
+  /// threshold edit below 25 still has a parent to point at. A plain id, so
+  /// it survives that submission being withdrawn.
   topMatchSubmissionId String?
 
-  /// Whether `duplicationScore` met the campaign threshold when the run closed.
-  /// Stored, so a later threshold change does not rewrite past conclusions.
+  /// Derived: `uniqueness == DUPLICATE`. Kept one release for the feed and
+  /// dashboard; read `uniqueness` in new code.
   overThreshold Boolean @default(false)
 
   duplicationCheckedAt DateTime?
@@ -161,6 +189,8 @@ model VideoSubmission {
   @@index([editorId])
   /// Backs the campaign feed's most-original-first ordering.
   @@index([campaignId, active, duplicationScore])
+  /// Backs the baseline query (UNIQUE and PARTIAL rows of a campaign).
+  @@index([campaignId, active, uniqueness])
 }
 
 /// Outcome band for one compared pair, straight from the engine's own bands:
@@ -188,12 +218,11 @@ enum ComparisonStatus {
   SUPERSEDED
 }
 
-/// One duplicate-detection run over a campaign's submissions.
-///
-/// The engine compares every input against every other, so a run is a whole
-/// campaign at a time rather than one video against the rest: N videos in,
-/// N*(N-1)/2 pairs out. A new upload starts a fresh run over the widened set
-/// and supersedes any run still in flight.
+/// One classification batch over a campaign's submissions: one or more
+/// candidate videos checked, in arrival order, against the campaign's baseline
+/// (its UNIQUE and PARTIAL videos). An upload is a batch of one, with
+/// `triggerSubmissionId` set; a rebuild or a bulk arrival is a batch of many.
+/// Pairs stored under a run are candidate-vs-baseline only.
 model VideoComparison {
   id String @id @default(cuid())
 
@@ -247,12 +276,10 @@ model VideoComparison {
 
 /// One call to the engine inside a run.
 ///
-/// The engine accepts a bounded number of URLs per request (4 today), so a
-/// campaign with more videos than that cannot be one call. The run splits
-/// them into overlapping batches chosen so that every pair of videos appears
-/// together in at least one batch — which is what keeps "every video compared
-/// with every other" true above the limit. A run is finished when all of its
-/// jobs are.
+/// The engine accepts a bounded number of URLs per request (4 by default), so
+/// a candidate with a baseline larger than that takes several calls. Each
+/// call pins the candidate first in `submissionIds` alongside a slice of the
+/// baseline; pairs among the baseline videos themselves are discarded.
 model VideoComparisonJob {
   id String @id @default(cuid())
 
@@ -266,9 +293,8 @@ model VideoComparisonJob {
 
   status ComparisonStatus @default(QUEUED)
 
-  /// The submissions this call compares. Every pair among them is covered by
-  /// it; a pair may also be covered by a sibling job, and the first result to
-  /// land wins.
+  /// The submissions this call compares: the candidate first, then the slice
+  /// of the baseline it was checked against.
   submissionIds String[]
 
   stage        String?
@@ -503,16 +529,23 @@ model CampaignReel {
   caption         String?
   invoiceApproved Boolean @default(false)
 
-  /// How duplicated this reel is, 0-100, measured only against reels posted
-  /// BEFORE it. So the earliest reel in a group scores 0 and is the original,
-  /// and every later copy carries a score against it. Null = not checked yet.
+  /// The label, or null — see VideoSubmission.uniqueness for the four states
+  /// (`checkedAt` is the second half). Arrival order for reels is `postedAt`,
+  /// then `createdAt`; a reel with no `postedAt` sorts after every reel that
+  /// has one.
+  uniqueness Uniqueness?
+
+  /// Match value, 0-100: the highest max(score, containment) against any
+  /// baseline reel posted before it. Stored even when below 25; 0 only when
+  /// there was nothing to compare against. Null = not checked yet.
   duplicationScore Float?
 
-  /// The earlier reel it scored highest against. A plain id, so it survives
-  /// that reel being deactivated.
+  /// The baseline reel it scored highest against — the parent, when the label
+  /// is not UNIQUE. A plain id, so it survives that reel being deactivated.
   originalReelId String?
 
-  /// True when nothing earlier matched it above the threshold.
+  /// Derived: `uniqueness == UNIQUE`. Kept one release for the reels page;
+  /// read `uniqueness` in new code.
   isOriginal Boolean @default(false)
 
   checkedAt DateTime?
@@ -529,6 +562,8 @@ model CampaignReel {
   @@unique([campaignId, trackerPostId])
   @@index([campaignId, active])
   @@index([campaignId, username])
+  /// Backs the baseline query (UNIQUE and PARTIAL rows of a campaign).
+  @@index([campaignId, active, uniqueness])
 }
 
 /// One "find matches" run over a campaign.
@@ -543,6 +578,10 @@ model ReelMatchRun {
   /// The score at or above which a pair counted as the same video, snapshotted
   /// so a later change cannot rewrite what this run concluded.
   threshold Float
+
+  /// The reel whose arrival started this run, when exactly one did. Null for
+  /// a rebuild or a bulk import. A plain id — see VideoComparison.
+  triggerReelId String?
 
   /// Denormalised once the run lands, so a history row renders without
   /// loading a pair.

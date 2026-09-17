@@ -15,7 +15,10 @@ import { toast } from "sonner"
 
 import { EmptyState } from "@/components/empty-state"
 import { MetaDivider } from "@/components/page-header"
-import { ComparisonVerdictBadge } from "@/components/status-badge"
+import {
+  ComparisonVerdictBadge,
+  UniquenessBadge,
+} from "@/components/status-badge"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -144,7 +147,7 @@ export function CampaignComparison({
       onClick={() => void start()}
     >
       {isStarting || isRunning ? <Loader2Icon className="animate-spin" /> : <ScanSearchIcon />}
-      {comparison === null ? "Run check" : "Check again"}
+      {comparison === null ? "Check everything" : "Re-check everything"}
     </Button>
   )
 
@@ -189,7 +192,7 @@ export function CampaignComparison({
           title={canRun ? "Not checked yet" : "Nothing to compare yet"}
           description={
             canRun
-              ? "Compare every submitted video against every other to find re-uploads and re-cuts of the same footage."
+              ? "Label every submitted video against the ones uploaded before it, to find re-uploads and re-cuts of the same footage. Uploads are checked as they land; this replays the whole campaign."
               : "A check needs at least two submitted videos. The next upload starts one automatically."
           }
           action={canRun ? runButton : undefined}
@@ -288,7 +291,7 @@ export function SubmissionCheckStrip({
     return (
       <div className={cn(CHECK_ROW, "text-muted-foreground")}>
         <CircleDashedIcon className="size-3 shrink-0" />
-        Not checked for duplicates yet
+        Waiting to be checked for duplicates
       </div>
     )
   }
@@ -347,8 +350,9 @@ export function SubmissionCheckStrip({
       >
         <ShieldCheckIcon className="size-3 shrink-0 text-success" />
         <span className="min-w-0 truncate">
-          No duplicates
-          {check.comparedWith > 0 &&
+          Unique
+          {check.comparedWith !== null &&
+            check.comparedWith > 0 &&
             ` · compared with ${check.comparedWith} other video${check.comparedWith === 1 ? "" : "s"}`}
         </span>
         <span className="numeric ml-auto shrink-0">
@@ -369,16 +373,18 @@ export function SubmissionCheckStrip({
         aria-label="Show the full duplicate-check result for this video"
         className="flex w-full flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2 text-left transition-colors outline-none hover:bg-accent/40 focus-visible:bg-accent/40"
       >
-        <ComparisonVerdictBadge verdict={check.verdict} />
+        <UniquenessBadge uniqueness={check.uniqueness} />
         <span className="numeric text-[13px] font-medium" title={SCORE_HINT}>
           {score(check.topScore)} match
         </span>
         {/* The clip-inside-source signal, easy to miss behind a modest score. */}
-        {check.topContainment >= 80 && check.verdict !== "MATCH" && (
-          <span className="numeric text-[11px] text-warning">
-            {score(check.topContainment)} contained
-          </span>
-        )}
+        {check.topContainment !== null &&
+          check.topContainment >= 80 &&
+          check.uniqueness !== "DUPLICATE" && (
+            <span className="numeric text-[11px] text-warning">
+              {score(check.topContainment)} contained
+            </span>
+          )}
         <span className="numeric ml-auto shrink-0 text-[11px] text-muted-foreground">
           {clock(check.durationSeconds)}
         </span>
@@ -387,6 +393,34 @@ export function SubmissionCheckStrip({
       </button>
 
       <ul className="pb-1.5">
+        {/* The pairs live in the run that labelled this video. When the
+            latest run is a later upload's, the row still knows its parent. */}
+        {check.matches.length === 0 && (
+          <li>
+            <button
+              type="button"
+              onClick={onOpenResult}
+              className="flex w-full items-center gap-2 px-3 py-1 text-left text-[11px] transition-colors outline-none hover:bg-accent/50 focus-visible:bg-accent/50"
+            >
+              <CornerDownRightIcon className="size-3 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate">
+                {check.parent?.fileName ?? "Another submission"}
+                {check.parent !== null && (
+                  <span className="text-muted-foreground">
+                    {" · "}
+                    {check.parent.editorName}
+                    <span className="numeric">
+                      {" · "}
+                      {relativeTime(check.parent.createdAt)}
+                    </span>
+                  </span>
+                )}
+              </span>
+              <span className="numeric shrink-0">{score(check.topScore)}</span>
+              <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground" />
+            </button>
+          </li>
+        )}
         {check.matches.map(({ pair, other }) => (
           <li key={pair.id}>
             <button
@@ -551,7 +585,7 @@ function RunProgress({ comparison }: { comparison: Comparison }) {
       />
 
       <p className="text-[11px] text-muted-foreground">
-        Comparing {comparison.videoCount} videos against each other. This takes
+        Checking {comparison.videoCount} videos against the campaign's earlier ones. This takes
         a few minutes — the page updates on its own.
       </p>
     </div>
@@ -1115,8 +1149,9 @@ function ResultBody({
   if (check.kind === "none") {
     return (
       <p className="text-[13px] text-muted-foreground">
-        This video has not been compared yet. The next upload on this campaign
-        starts a check automatically.
+        This video is waiting to be checked. Every upload is compared against
+        the campaign's existing videos as it lands; this page updates on its
+        own.
       </p>
     )
   }
@@ -1162,11 +1197,11 @@ function ResultBody({
         <div className="flex items-start gap-2.5 rounded-lg border border-success/25 bg-success/5 p-3">
           <ShieldCheckIcon className="mt-0.5 size-4 shrink-0 text-success" />
           <div className="space-y-0.5">
-            <p className="text-[13px] font-medium">No duplicates</p>
+            <p className="text-[13px] font-medium">Unique</p>
             <p className="text-[13px] text-muted-foreground">
-              Compared against {check.comparedWith} other video
-              {check.comparedWith === 1 ? "" : "s"} on this campaign. Nothing
-              matched.
+              {check.comparedWith === null
+                ? "Nothing on this campaign resembled it when it was checked."
+                : `Compared against ${check.comparedWith} other video${check.comparedWith === 1 ? "" : "s"} on this campaign. Nothing resembled it.`}
             </p>
           </div>
         </div>
@@ -1179,7 +1214,7 @@ function ResultBody({
     <div className="space-y-4">
       {/* The answer, in one line. Everything below is why. */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-destructive/20 bg-destructive/[0.05] px-3 py-2.5">
-        <ComparisonVerdictBadge verdict={check.verdict} />
+        <UniquenessBadge uniqueness={check.uniqueness} />
         <span
           className="numeric text-[20px] leading-none font-semibold"
           title={SCORE_HINT}
@@ -1188,13 +1223,42 @@ function ResultBody({
         </span>
         <span className="text-[11px] text-muted-foreground">match</span>
         <span className="w-full text-[13px] text-muted-foreground sm:w-auto sm:flex-1 sm:text-right">
-          Matches {check.matches.length} other submission
-          {check.matches.length === 1 ? "" : "s"}
+          {check.uniqueness === "DUPLICATE"
+            ? "At or above this campaign's limit"
+            : "Below this campaign's limit, but not unique"}
         </span>
       </div>
 
       <div className="space-y-2">
         <p className={SECTION_LABEL}>What it matches</p>
+        {check.matches.length === 0 && (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border p-3">
+            <span className="min-w-0 truncate text-[13px] font-medium">
+              {check.parent?.fileName ?? "Another submission"}
+            </span>
+            {check.parent !== null && (
+              <>
+                <MetaDivider />
+                <span className="text-[13px] text-muted-foreground">
+                  {check.parent.editorName}
+                </span>
+                <MetaDivider />
+                <span
+                  className="numeric text-[11px] text-muted-foreground"
+                  title={fullDate(check.parent.createdAt)}
+                >
+                  {relativeTime(check.parent.createdAt)}
+                </span>
+              </>
+            )}
+            <span
+              className="numeric ml-auto text-[13px] font-medium"
+              title={SCORE_HINT}
+            >
+              {score(check.topScore)} match
+            </span>
+          </div>
+        )}
         {check.matches.map(({ pair, other }) => (
           <div key={pair.id} className="space-y-3 rounded-lg border p-3">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
