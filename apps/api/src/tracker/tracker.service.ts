@@ -50,11 +50,26 @@ const TRACKER_POSTS_URL =
 /** Upstream's own label for a single-video Instagram post. */
 const REEL_POST_TYPE = "instareel";
 
-/** Pulled per request, so one page has to cover a campaign. */
-const POSTS_PAGE_SIZE = 200;
+/**
+ * Posts per request. The upstream accepts a thousand, which turns a
+ * ten-thousand-post campaign into eleven requests rather than fifty-four.
+ */
+const POSTS_PAGE_SIZE = 1000;
 
-/** Posts are a bigger payload than the picker list, and are fetched rarely. */
-const POSTS_TIMEOUT_MS = 25_000;
+/**
+ * Stops a paging loop that never sees its own end.
+ *
+ * At the page size above this is ten times the largest campaign measured, so
+ * reaching it means the upstream is repeating a page or miscounting, not that
+ * a campaign is genuinely that big.
+ */
+const MAX_POSTS_PAGES = 100;
+
+/**
+ * Per page, not per import. Raised with the page size — a thousand posts is a
+ * far bigger payload than the two hundred this was sized for.
+ */
+const POSTS_TIMEOUT_MS = 60_000;
 
 /** How long a fetched list stays fresh. The feed changes a few times a day. */
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -111,7 +126,18 @@ export class TrackerService {
   }
 
   /**
-   * Every matchable reel on a tracker campaign.
+   * Every matchable reel on a tracker campaign, oldest post first.
+   *
+   * Ordered upstream by `postDate`, not by the tracker's own `createdAt`. The
+   * two disagree: a campaign's earliest *post* can be ingested long after a
+   * later one, so a window taken in ingest order can miss the beginning of the
+   * campaign entirely. On the Traitors campaign that window started five and a
+   * half weeks late, which matters because the earliest post is the original
+   * every later reel is read against.
+   *
+   * Paged to the end rather than taking a first page. The campaign carries ten
+   * thousand posts and a page holds a thousand, so one page is a sample, not
+   * the campaign.
    *
    * Deliberately NOT cached, unlike the campaign picker above. That list
    * tolerates staleness because it only fills a dropdown; an ingest is asking
@@ -119,10 +145,35 @@ export class TrackerService {
    * retried than quietly match against an hour-old feed.
    */
   async listReels(trackerCampaignId: string): Promise<TrackerReel[]> {
+    const reels: TrackerReel[] = [];
+    let fetched = 0;
+
+    for (let page = 1; page <= MAX_POSTS_PAGES; page += 1) {
+      const { rows, total } = await this.fetchPostsPage(trackerCampaignId, page);
+      fetched += rows.length;
+      reels.push(...parseTrackerReels(rows));
+
+      // A short page is the end of the feed; `total` is the upstream's own
+      // count, checked as well so a page that happens to come back full on the
+      // last boundary does not cost an extra request.
+      if (rows.length < POSTS_PAGE_SIZE || fetched >= total) break;
+    }
+
+    this.logger.log(
+      `Tracker campaign ${trackerCampaignId}: ${reels.length} matchable reel(s) from ${fetched} post(s)`,
+    );
+    return reels;
+  }
+
+  /** One page of posts, with the upstream's total so paging can stop. */
+  private async fetchPostsPage(
+    trackerCampaignId: string,
+    page: number,
+  ): Promise<{ rows: unknown[]; total: number }> {
     const url =
       `${TRACKER_POSTS_URL}/${encodeURIComponent(trackerCampaignId)}` +
-      `?skip=0&orderBy=desc&orderByProp=createdAt&limit=${POSTS_PAGE_SIZE}` +
-      `&search=&field=&page=1`;
+      `?skip=${(page - 1) * POSTS_PAGE_SIZE}&orderBy=asc&orderByProp=postDate` +
+      `&limit=${POSTS_PAGE_SIZE}&search=&field=&page=${page}`;
 
     let response: Response;
     try {
@@ -146,11 +197,7 @@ export class TrackerService {
     }
 
     const payload: unknown = await response.json();
-    const reels = parseTrackerReels(payload);
-    this.logger.log(
-      `Tracker campaign ${trackerCampaignId}: ${reels.length} matchable reel(s)`,
-    );
-    return reels;
+    return { rows: postRowsOf(payload), total: totalCountOf(payload) };
   }
 
   /**
@@ -263,7 +310,8 @@ function parseTrackerCampaigns(payload: unknown): TrackerCampaign[] {
  * reel is dropped rather than poisoning the page. Upstream is a third party
  * and its records vary — some posts carry no media, some carry several.
  */
-function parseTrackerReels(payload: unknown): TrackerReel[] {
+/** The post rows of one page. Throws rather than guessing at a changed shape. */
+export function postRowsOf(payload: unknown): unknown[] {
   if (typeof payload !== "object" || payload === null) {
     throw new Error("tracker response was not a JSON object");
   }
@@ -272,7 +320,23 @@ function parseTrackerReels(payload: unknown): TrackerReel[] {
   if (!Array.isArray(records)) {
     throw new Error("tracker response had no `data.records` array");
   }
+  return records;
+}
 
+/**
+ * The upstream's count of posts on the campaign.
+ *
+ * Zero when it is missing, which stops paging after the first short page
+ * rather than trusting a number that is not there.
+ */
+export function totalCountOf(payload: unknown): number {
+  if (typeof payload !== "object" || payload === null) return 0;
+  const { data } = payload as { data?: { totalCount?: unknown } };
+  const total = data?.totalCount;
+  return typeof total === "number" && Number.isFinite(total) ? total : 0;
+}
+
+export function parseTrackerReels(records: readonly unknown[]): TrackerReel[] {
   const reels: TrackerReel[] = [];
   const seen = new Set<string>();
 

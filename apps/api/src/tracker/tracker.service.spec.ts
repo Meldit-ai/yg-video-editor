@@ -256,3 +256,89 @@ describe("TrackerService.resolveName", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+/** One posts page: rows plus the upstream's own count of the whole campaign. */
+function postsResponse(rows: unknown[], totalCount: number): Response {
+  return jsonResponse({
+    statusCode: 200,
+    success: true,
+    data: { records: rows, totalCount },
+  });
+}
+
+/** A usable Instagram reel row, as the tracker actually shapes one. */
+function reelRow(id: string, postDate: string | null, handle = "someone") {
+  return {
+    id,
+    post_type: "instareel",
+    postDate,
+    social_username: `https://instagram.com/${handle}`,
+    media_urls: [`https://cdn.example/${id}.mp4`],
+  };
+}
+
+describe("TrackerService.listReels", () => {
+  it("asks for the campaign in post-date order, oldest first", async () => {
+    fetchMock.mockResolvedValue(postsResponse([reelRow("a", "2026-07-27T00:00:00Z")], 1));
+
+    await service.listReels("camp-1");
+
+    const url = fetchMock.mock.calls[0]?.[0] as string;
+    // Ordering by the tracker's own createdAt takes whatever was ingested
+    // last, which on a real campaign started five weeks after its first post.
+    expect(url).toContain("orderByProp=postDate");
+    expect(url).toContain("orderBy=asc");
+  });
+
+  it("pages until the upstream's total is covered", async () => {
+    const full = Array.from({ length: 1000 }, (_, index) =>
+      reelRow(`p1-${index}`, "2026-07-27T00:00:00Z"),
+    );
+    fetchMock
+      .mockResolvedValueOnce(postsResponse(full, 1200))
+      .mockResolvedValueOnce(postsResponse([reelRow("p2-0", "2026-08-01T00:00:00Z")], 1200));
+
+    const reels = await service.listReels("camp-1");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(reels).toHaveLength(1001);
+  });
+
+  it("stops on a short page without asking for another", async () => {
+    // The total is the campaign's, not the page's, so a short page is the end
+    // even when the count says more — a campaign can shrink between requests.
+    fetchMock.mockResolvedValue(postsResponse([reelRow("a", "2026-07-27T00:00:00Z")], 9999));
+
+    await service.listReels("camp-1");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps Instagram reels and drops every other post type", async () => {
+    fetchMock.mockResolvedValue(
+      postsResponse(
+        [
+          reelRow("keep", "2026-07-27T00:00:00Z"),
+          { ...reelRow("fb", "2026-07-27T00:00:00Z"), post_type: "facebookreel" },
+          { ...reelRow("tw", "2026-07-27T00:00:00Z"), post_type: "twitterpost" },
+          { ...reelRow("ig", "2026-07-27T00:00:00Z"), post_type: "instapost" },
+        ],
+        4,
+      ),
+    );
+
+    const reels = await service.listReels("camp-1");
+
+    // facebookreel is the one that would slip through a looser "is it a reel"
+    // test, and it is not Instagram.
+    expect(reels.map((reel) => reel.trackerPostId)).toEqual(["keep"]);
+  });
+
+  it("fails loudly when the tracker is unreachable", async () => {
+    fetchMock.mockRejectedValue(new Error("socket hang up"));
+
+    await expect(service.listReels("camp-1")).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
+  });
+});

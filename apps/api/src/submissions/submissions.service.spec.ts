@@ -91,7 +91,12 @@ describe("SubmissionsService", () => {
 
       expect(submissionDelegate.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { campaignId: "cmp_1", active: true, editorId: "usr_1" },
+          where: {
+            campaignId: "cmp_1",
+            active: true,
+            editorId: "usr_1",
+            source: "EDITOR",
+          },
           orderBy: [{ createdAt: "desc" }],
         }),
       );
@@ -140,6 +145,7 @@ describe("SubmissionsService", () => {
             campaignId: "cmp_1",
             active: true,
             editorId: "usr_1",
+            source: "EDITOR",
             overThreshold: true,
           },
         }),
@@ -153,7 +159,22 @@ describe("SubmissionsService", () => {
 
       expect(submissionDelegate.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { campaignId: "cmp_1", active: true },
+          where: { campaignId: "cmp_1", active: true, source: "EDITOR" },
+        }),
+      );
+    });
+
+    it("reads the tracker timeline only when asked for it", async () => {
+      // The two are separate workflows sharing a table. Without an explicit
+      // source the campaign feed means the editors' hand-ins, so reels pulled
+      // in from the tracker must not appear in it.
+      submissionDelegate.findMany.mockResolvedValue([]);
+
+      await service.findAll("cmp_1", admin, { source: "TRACKER" });
+
+      expect(submissionDelegate.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { campaignId: "cmp_1", active: true, source: "TRACKER" },
         }),
       );
     });

@@ -1,6 +1,6 @@
 import { Readable } from "node:stream";
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
-import { Role } from "@repo/database";
+import { Role, SubmissionSource } from "@repo/database";
 import { ComparisonsService } from "../comparisons/comparisons.service.js";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { StorageService } from "../storage/storage.service.js";
@@ -184,6 +184,9 @@ export class ReelAdoptService {
           objectKey,
           contentType,
           sizeBytes,
+          // Never an editor's hand-in, however it is attributed: the campaign
+          // feed reads one workflow at a time and this belongs to the other.
+          source: SubmissionSource.TRACKER,
         },
       });
     } catch (caught) {

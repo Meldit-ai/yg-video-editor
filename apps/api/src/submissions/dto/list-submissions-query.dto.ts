@@ -1,5 +1,6 @@
 import { Transform } from "class-transformer";
 import { IsBoolean, IsIn, IsOptional } from "class-validator";
+import { SubmissionSource } from "@repo/database";
 import { toBoolean } from "../../common/transforms.js";
 
 /** Orderings the campaign feed offers. */
@@ -29,7 +30,21 @@ export class ListSubmissionsQueryDto {
 
   /** Only videos that met their campaign's accepted-duplication level. */
   @Transform(toBoolean)
-  @IsOptional()
   @IsBoolean({ message: "flagged must be true or false" })
+  @IsOptional()
   flagged?: boolean;
+
+  /**
+   * Which workflow to read: the editors' hand-ins, or the reels brought in
+   * from the tracker.
+   *
+   * Defaults to EDITOR in the service rather than here, because "no source
+   * given" has to mean the editor feed — the two are separate pipelines and a
+   * blended list is never the right answer.
+   */
+  @IsOptional()
+  @IsIn(Object.values(SubmissionSource), {
+    message: `source must be one of: ${Object.values(SubmissionSource).join(", ")}`,
+  })
+  source?: SubmissionSource;
 }

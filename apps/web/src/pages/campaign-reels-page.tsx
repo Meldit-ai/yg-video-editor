@@ -29,9 +29,6 @@ import type {
 } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
-/** Matches the API's own default — see dto/import-reels.dto.ts. */
-const IMPORT_LIMIT = 50
-
 /** While a check is running, the numbers move often enough to watch. */
 const POLL_MS = 4_000
 
@@ -85,9 +82,11 @@ export function CampaignReelsPage() {
   async function importReels() {
     setImporting(true)
     try {
+      // No limit: the import takes the campaign whole, because the earliest
+      // reel is what every later one is read against.
       const result = await api.post<ReelImportResult>(
         `/campaigns/${id}/reels/import`,
-        { limit: IMPORT_LIMIT },
+        {},
       )
       toast.success(
         `${result.imported} new reel${result.imported === 1 ? "" : "s"} imported`,

@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
-import { Role, type Prisma } from "@repo/database";
+import { Role, SubmissionSource, type Prisma } from "@repo/database";
 import type {
   ListSubmissionsQueryDto,
   SubmissionSort,
@@ -56,7 +56,14 @@ export class SubmissionsService {
     private readonly comparisons: ComparisonsService,
   ) {}
 
-  /** Submissions on a campaign, newest first, scoped to what this user sees. */
+  /**
+   * Submissions on a campaign, newest first, scoped to what this user sees.
+   *
+   * One workflow at a time. With no `source` given this is the editors' feed,
+   * because that is what the campaign page has always meant by "the videos" —
+   * reels brought in from the tracker are a separate pipeline and showing both
+   * in one list would misrepresent both.
+   */
   async findAll(
     campaignId: string,
     user: AuthenticatedUser,
@@ -65,6 +72,7 @@ export class SubmissionsService {
     const rows = await this.prisma.client.videoSubmission.findMany({
       where: {
         ...this.scope(campaignId, user),
+        source: query.source ?? SubmissionSource.EDITOR,
         ...(query.flagged === undefined ? {} : { overThreshold: query.flagged }),
       },
       include: WITH_EDITOR,

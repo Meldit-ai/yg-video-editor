@@ -2,7 +2,6 @@ import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import type { Prisma } from "@repo/database";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { TrackerService, type TrackerReel } from "../tracker/tracker.service.js";
-import { DEFAULT_REEL_LIMIT } from "./dto/import-reels.dto.js";
 import type { CampaignReelDto, ReelImportResultDto } from "./reels.types.js";
 
 const WITH_ORIGINAL = {
@@ -27,9 +26,13 @@ type ReelRow = Prisma.CampaignReelGetPayload<typeof WITH_ORIGINAL>;
 /**
  * Instagram reels pulled from the external tracker for a campaign.
  *
- * Import is bounded and explicit rather than "fetch the campaign": a real
- * campaign carries over ten thousand reels, and checking them is quadratic, so
- * an unbounded import is weeks of work nobody asked for.
+ * An import takes the campaign whole. Holding a subset is not a cheaper version
+ * of the same thing: originality is decided by post date, so a missing earlier
+ * reel silently promotes a copy. Whatever bound the check wants belongs on the
+ * check — this only decides what is on record.
+ *
+ * Instagram only, by `post_type`. The same campaign carries Twitter, Reddit and
+ * Facebook posts, including Facebook reels, and none of them belong here.
  */
 @Injectable()
 export class ReelsService {
@@ -41,17 +44,17 @@ export class ReelsService {
   ) {}
 
   /**
-   * Pulls the campaign's reels from the tracker and stores them.
+   * Pulls every Instagram reel on the campaign from the tracker and stores it.
    *
-   * Takes the OLDEST reels by Instagram post date, not the newest. The check
-   * that follows treats the earliest reel in a matching group as the original,
-   * so a window that excluded it would crown a copy instead — every later reel
-   * would be measured against something that was itself taken from elsewhere.
+   * The whole campaign, not a window. Which reel is the original is decided by
+   * post date, so holding a subset would crown whichever copy happened to be
+   * the oldest one imported — the earliest reel has to be present for any of
+   * the later ones to be read correctly.
+   *
+   * Ordering is the tracker's, by post date ascending; the local sort below is
+   * what guarantees it rather than assuming upstream honoured the request.
    */
-  async importFromTracker(
-    campaignId: string,
-    limit = DEFAULT_REEL_LIMIT,
-  ): Promise<ReelImportResultDto> {
+  async importFromTracker(campaignId: string): Promise<ReelImportResultDto> {
     const campaign = await this.prisma.client.campaign.findFirst({
       where: { id: campaignId, active: true },
       select: { trackerCampaignId: true, title: true },
@@ -71,37 +74,44 @@ export class ReelsService {
     // unknown cannot be shown to precede anything, so it must not be allowed
     // to claim the original's place.
     const ordered = [...fetched].sort(compareByPostedAt);
-    const chosen = ordered.slice(0, limit);
+
+    // One read for the whole campaign instead of one per reel. At a few
+    // thousand reels the per-row lookup this replaces was the slowest part of
+    // an import that otherwise only writes.
+    const existing = await this.prisma.client.campaignReel.findMany({
+      where: { campaignId },
+      select: { trackerPostId: true },
+    });
+    const known = new Set(existing.map((row) => row.trackerPostId));
 
     let imported = 0;
     let updated = 0;
 
-    for (const reel of chosen) {
-      const existing = await this.prisma.client.campaignReel.findUnique({
-        where: {
-          campaignId_trackerPostId: {
-            campaignId,
-            trackerPostId: reel.trackerPostId,
-          },
-        },
-        select: { id: true },
-      });
+    for (const batch of chunk(ordered, UPSERT_BATCH)) {
+      // Batched rather than one transaction over the lot: a single transaction
+      // holding thousands of writes is a long lock, and an import that fails
+      // halfway has still stored what it read.
+      await this.prisma.client.$transaction(
+        batch.map((reel) =>
+          this.prisma.client.campaignReel.upsert({
+            where: {
+              campaignId_trackerPostId: {
+                campaignId,
+                trackerPostId: reel.trackerPostId,
+              },
+            },
+            create: { campaignId, ...toRow(reel) },
+            // Scores are deliberately not cleared on re-import: re-running an
+            // import must not throw away a check that already ran.
+            update: toRow(reel),
+          }),
+        ),
+      );
 
-      await this.prisma.client.campaignReel.upsert({
-        where: {
-          campaignId_trackerPostId: {
-            campaignId,
-            trackerPostId: reel.trackerPostId,
-          },
-        },
-        create: { campaignId, ...toRow(reel) },
-        // Scores are deliberately not cleared on re-import: re-running an
-        // import must not throw away a check that already ran.
-        update: toRow(reel),
-      });
-
-      if (existing === null) imported += 1;
-      else updated += 1;
+      for (const reel of batch) {
+        if (known.has(reel.trackerPostId)) updated += 1;
+        else imported += 1;
+      }
     }
 
     const totalReels = await this.prisma.client.campaignReel.count({
@@ -117,9 +127,9 @@ export class ReelsService {
       totalReels,
       imported,
       updated,
-      // Everything the tracker offered beyond what we took. Reported so a
-      // caller can see the campaign is bigger than the window they asked for.
-      skipped: Math.max(0, fetched.length - chosen.length),
+      // Nothing is held back any more, so this is only ever the reels the
+      // tracker offered that were not usable — no media URL, no handle.
+      skipped: 0,
     };
   }
 
@@ -158,6 +168,18 @@ export class ReelsService {
 
     return rows.map((row) => toDto(row, usernameById));
   }
+}
+
+/** Upserts per transaction. Small enough that no single lock is long. */
+const UPSERT_BATCH = 100;
+
+/** Splits a list into fixed-size runs, the last one short. */
+function chunk<T>(items: readonly T[], size: number): T[][] {
+  const batches: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    batches.push([...items.slice(index, index + size)]);
+  }
+  return batches;
 }
 
 /** Oldest Instagram post first; unknown dates last. */

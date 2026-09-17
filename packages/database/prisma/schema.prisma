@@ -16,6 +16,17 @@ enum Role {
   EDITOR
 }
 
+/// Where a video came from, and therefore which workflow it belongs to.
+///
+/// The two are separate pipelines that happen to share a table: an editor's
+/// hand-in is scored against the campaign's other hand-ins, while a reel
+/// pulled from the tracker belongs to the Instagram timeline. Without this the
+/// only thing telling them apart was a convention in the file name.
+enum SubmissionSource {
+  EDITOR
+  TRACKER
+}
+
 enum CampaignStatus {
   ACTIVE
   INACTIVE
@@ -108,6 +119,10 @@ model VideoSubmission {
   editorId String
   editor   User   @relation(fields: [editorId], references: [id])
 
+  /// Which workflow this row belongs to. EDITOR unless it was brought in from
+  /// the tracker, so every existing and future hand-in is right by default.
+  source SubmissionSource @default(EDITOR)
+
   /// The name as it was on the uploader's disk — for display only. Never used
   /// to build `objectKey`, which is generated server-side.
   fileName String
@@ -161,6 +176,8 @@ model VideoSubmission {
   @@index([editorId])
   /// Backs the campaign feed's most-original-first ordering.
   @@index([campaignId, active, duplicationScore])
+  /// The feed reads one workflow at a time, never both at once.
+  @@index([campaignId, active, source])
 }
 
 /// Outcome band for one compared pair, straight from the engine's own bands:

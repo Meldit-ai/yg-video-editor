@@ -3,7 +3,6 @@ import { Role } from "@repo/database";
 import { Roles } from "../auth/decorators/roles.decorator.js";
 import { CampaignAccessGuard } from "../campaigns/guards/campaign-access.guard.js";
 import { AdoptReelsDto } from "./dto/adopt-reels.dto.js";
-import { ImportReelsDto } from "./dto/import-reels.dto.js";
 import { ReelAdoptService, type AdoptResultDto } from "./reel-adopt.service.js";
 import { ReelCheckService } from "./reel-check.service.js";
 import { ReelsService } from "./reels.service.js";
@@ -38,15 +37,15 @@ export class ReelsController {
   /**
    * POST /api/campaigns/:campaignId/reels/import — pull reels from the tracker.
    *
-   * Bounded by `limit` (default 50): checking reels is quadratic, and a real
-   * campaign carries over ten thousand of them.
+   * Takes every Instagram reel on the campaign. Unbounded on purpose: the
+   * earliest reel decides who copied whom, so a window that missed it would
+   * put the wrong profile at the front.
    */
   @Post("import")
   import(
     @Param("campaignId") campaignId: string,
-    @Body() body: ImportReelsDto,
   ): Promise<ReelImportResultDto> {
-    return this.reels.importFromTracker(campaignId, body.limit);
+    return this.reels.importFromTracker(campaignId);
   }
 
   /**
