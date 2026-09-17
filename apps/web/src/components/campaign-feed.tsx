@@ -11,6 +11,7 @@ import { motion, useReducedMotion } from "motion/react"
 import { EmptyState } from "@/components/empty-state"
 import { VendorShareDialog } from "@/components/vendor-share-dialog"
 import { MetaDivider } from "@/components/page-header"
+import { UniquenessBadge } from "@/components/status-badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -72,9 +73,15 @@ export function CampaignFeed({ campaign }: { campaign: Campaign }) {
     })
   }
 
-  const checkedCount = items.filter(
-    (item) => item.duplicationScore !== null,
-  ).length
+  const checkedCount = items.filter((item) => item.uniqueness !== null).length
+
+  // For "Duplicate of <name>": the parent is usually on the same page, and
+  // when it is not (withdrawn, or hidden from this editor) the line falls
+  // back to naming nothing in particular.
+  const nameById = useMemo(
+    () => new Map(items.map((item) => [item.id, item.fileName])),
+    [items],
+  )
 
   return (
     <section className="space-y-3">
@@ -162,6 +169,11 @@ export function CampaignFeed({ campaign }: { campaign: Campaign }) {
               key={submission.id}
               submission={submission}
               threshold={campaign.duplicationThreshold}
+              parentName={
+                submission.topMatchSubmissionId === null
+                  ? null
+                  : (nameById.get(submission.topMatchSubmissionId) ?? null)
+              }
               isSelected={selected.has(submission.id)}
               onToggle={() => toggle(submission.id)}
             />
@@ -224,15 +236,19 @@ export function CampaignFeed({ campaign }: { campaign: Campaign }) {
 function FeedCard({
   submission,
   threshold,
+  parentName,
   isSelected,
   onToggle,
 }: {
   submission: VideoSubmission
   threshold: number
+  /** The file name of the video this one was labelled against, if known. */
+  parentName: string | null
   isSelected: boolean
   onToggle: () => void
 }) {
   const [isUnplayable, setUnplayable] = useState(false)
+  const relation = relationLine(submission, parentName)
 
   return (
     <div
@@ -254,8 +270,24 @@ function FeedCard({
         >
           {submission.fileName}
         </span>
-        <ScoreBadge submission={submission} threshold={threshold} />
+        <UniquenessBadge
+          uniqueness={submission.uniqueness}
+          value={submission.duplicationScore}
+          pendingLabel={
+            submission.duplicationCheckedAt === null ? "Checking" : "Unreadable"
+          }
+          className="shrink-0"
+        />
       </div>
+
+      {relation ? (
+        <div
+          className="border-b px-3 py-1.5 text-[12px] text-muted-foreground"
+          title={`Against this campaign's ${threshold}% limit`}
+        >
+          {relation}
+        </div>
+      ) : null}
 
       {isUnplayable ? (
         <div className="flex aspect-video items-center justify-center bg-muted/40 px-4 text-center text-[12px] text-muted-foreground">
@@ -287,49 +319,22 @@ function FeedCard({
 }
 
 /**
- * The duplication readout.
- *
- * Null is its own state and says so: a video no run has reached yet is not a
- * 0% original one, and showing it as such would be a lie the feed's ordering
- * already takes care to avoid.
+ * "Duplicate of final-cut.mp4" — the one line that turns a label into a
+ * finding. UNIQUE videos get nothing: the best match a UNIQUE video carries
+ * is bookkeeping for a later threshold edit, not something it was copied
+ * from, and naming it would read as an accusation.
  */
-function ScoreBadge({
-  submission,
-  threshold,
-}: {
-  submission: VideoSubmission
-  threshold: number
-}) {
-  if (submission.duplicationScore === null) {
-    return (
-      <span className="numeric shrink-0 rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
-        Not checked
-      </span>
-    )
+function relationLine(
+  submission: VideoSubmission,
+  parentName: string | null,
+): string | null {
+  if (submission.uniqueness === "DUPLICATE") {
+    return `Duplicate of ${parentName ?? "another submission"}`
   }
-
-  const score = submission.duplicationScore
-  const isFlagged = submission.overThreshold
-
-  return (
-    <span
-      title={
-        isFlagged
-          ? `At or above this campaign's ${threshold}% limit`
-          : `Below this campaign's ${threshold}% limit`
-      }
-      className={cn(
-        "numeric shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium",
-        isFlagged
-          ? "bg-[color-mix(in_oklch,var(--warning)_18%,transparent)] text-[var(--warning)]"
-          : score === 0
-            ? "bg-[color-mix(in_oklch,var(--success)_16%,transparent)] text-[var(--success)]"
-            : "bg-muted text-muted-foreground",
-      )}
-    >
-      {score === 0 ? "Original" : `${score}% dup`}
-    </span>
-  )
+  if (submission.uniqueness === "PARTIAL") {
+    return `Partly matches ${parentName ?? "another submission"}`
+  }
+  return null
 }
 
 function FeedSkeleton() {

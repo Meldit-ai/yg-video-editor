@@ -13,6 +13,7 @@ import {
 import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { TrackerService } from "../tracker/tracker.service.js";
+import { UniquenessService } from "../uniqueness/uniqueness.service.js";
 import type { CreateCampaignDto } from "./dto/create-campaign.dto.js";
 import type { UpdateCampaignDto } from "./dto/update-campaign.dto.js";
 
@@ -42,6 +43,7 @@ export class CampaignsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tracker: TrackerService,
+    private readonly uniqueness: UniquenessService,
   ) {}
 
   /**
@@ -122,7 +124,7 @@ export class CampaignsService {
    */
   async update(id: string, input: UpdateCampaignDto): Promise<Campaign> {
     // 404 before writing, and it keeps soft-deleted rows unpatchable.
-    await this.getActiveOrThrow(id);
+    const existing = await this.getActiveOrThrow(id);
 
     const data: Prisma.CampaignUpdateInput = {};
     if (input.title !== undefined) data.title = input.title;
@@ -143,7 +145,23 @@ export class CampaignsService {
     }
     if (input.active !== undefined) data.active = input.active;
 
-    return this.prisma.client.campaign.update({ where: { id }, data });
+    const thresholdChanged =
+      input.duplicationThreshold !== undefined &&
+      input.duplicationThreshold !== existing.duplicationThreshold;
+    if (!thresholdChanged) {
+      return this.prisma.client.campaign.update({ where: { id }, data });
+    }
+
+    // The labels follow the threshold: every video on the campaign is
+    // re-labelled from its stored match value, with no engine call, in the
+    // same transaction as the number itself — so nobody reads a threshold
+    // of 40 beside labels computed at 90.
+    const threshold = input.duplicationThreshold as number;
+    return this.prisma.client.$transaction(async (tx) => {
+      const row = await tx.campaign.update({ where: { id }, data });
+      await this.uniqueness.reclassifyForThreshold(tx, id, threshold);
+      return row;
+    });
   }
 
   /**

@@ -7,8 +7,9 @@ import type {
   Comparison,
   ComparisonPair,
   ComparisonSummary,
-  ComparisonVerdict,
   ComparisonVideo,
+  Uniqueness,
+  VideoSubmission,
 } from "@/lib/types"
 
 /** How often to ask the API for a run's progress while it is moving. */
@@ -29,47 +30,48 @@ const WATCH_WINDOW_MS = 25_000
 /**
  * What the duplicate check currently says about **one** video.
  *
- * Every branch is derived from stored data — the run's status, that video's
- * entry row, and the pairs it appears in — so a card can state its own
- * position without the reader having to map it onto the panel below.
+ * The label on the submission row is the truth — `uniqueness`, its match
+ * value and its parent — and the latest run is only evidence: a run holds
+ * the video(s) it checked against the baseline, so most cards are not in it,
+ * and "not in the latest run" says nothing about whether a video was
+ * checked. The pairs and durations are borrowed from the run when the video
+ * happens to be in it, and left out otherwise.
  *
  * The distinctions matter: "not checked yet", "could not be read" and "no
  * duplicates" all look like silence on a card, and only the last one means
  * the video is clear.
  */
 export type SubmissionCheck =
-  /** No run covers this video, and none is on its way. */
+  /** Not checked, and nothing is on its way. */
   | { kind: "none" }
   | { kind: "running"; pairsDone: number; pairsTotal: number }
   | { kind: "failed"; message: string }
-  /** The engine never fingerprinted it, so it is in no pair at all. */
+  /** The engine could not fingerprint it, so it has no label. */
   | { kind: "unreadable"; checkedAt: string }
   | {
       kind: "clean"
-      /** Other videos in the run that the engine actually compared it to. */
-      comparedWith: number
+      /** Baseline videos it was compared to — known only from the latest run. */
+      comparedWith: number | null
       durationSeconds: number | null
       checkedAt: string
     }
   | {
       kind: "flagged"
-      /** The strongest verdict across every pair this video is in. */
-      verdict: ComparisonVerdict
+      uniqueness: Extract<Uniqueness, "PARTIAL" | "DUPLICATE">
+      /** The match value: the highest max(score, containment) it reached. */
       topScore: number
-      topContainment: number
+      /** Known only when the latest run holds this video's pairs. */
+      topContainment: number | null
+      /** The baseline video it was labelled against, when still listed. */
+      parent: VideoSubmission | null
       durationSeconds: number | null
       checkedAt: string
-      /** Strongest first. `other` is null if the counterpart was removed. */
+      /**
+       * Strongest first, from the latest run when it holds this video; empty
+       * otherwise. `other` is null if the counterpart was removed.
+       */
       matches: { pair: ComparisonPair; other: ComparisonVideo | null }[]
     }
-
-/** Strongest first, for picking one headline verdict out of several pairs. */
-const VERDICT_STRENGTH: Record<ComparisonVerdict, number> = {
-  MATCH: 3,
-  LIKELY_MATCH: 2,
-  UNCERTAIN: 1,
-  NO_MATCH: 0,
-}
 
 export interface ComparisonState {
   /** The campaign's current run, whatever its state, or null if never run. */
@@ -84,14 +86,21 @@ export interface ComparisonState {
   matches: Map<string, ComparisonPair[]>
   /** The run's video roster, by submission id — pairs reference it by id. */
   videoById: Map<string, ComparisonVideo>
-  /** What the check says about one video, for the card that shows it. */
-  checkFor: (submissionId: string) => SubmissionCheck
+  /**
+   * What the check says about one video, for the card that shows it. The
+   * parent is looked up by the caller, which has the whole list; the hook
+   * only holds the latest run.
+   */
+  checkFor: (
+    submission: VideoSubmission,
+    parent: VideoSubmission | null,
+  ) => SubmissionCheck
   /** A run is in flight, or one is expected imminently after an upload. */
   isRunning: boolean
   /** A "run now" request is in flight. */
   isStarting: boolean
   refetch: () => Promise<void>
-  /** Starts a run over every video on the campaign. Throws on failure. */
+  /** Re-labels every video on the campaign from scratch. Throws on failure. */
   run: () => Promise<void>
   /** Called after an upload: poll for the run the API is about to start. */
   watchForNewRun: () => void
@@ -216,12 +225,13 @@ export function useComparison(
   }, [comparison])
 
   const checkFor = useCallback(
-    (submissionId: string): SubmissionCheck =>
+    (submission: VideoSubmission, parent: VideoSubmission | null): SubmissionCheck =>
       describeSubmissionCheck(
+        submission,
+        parent,
         comparison,
         isRunning,
-        submissionId,
-        matches.get(submissionId) ?? [],
+        matches.get(submission.id) ?? [],
         videoById,
       ),
     [comparison, isRunning, matches, videoById],
@@ -243,58 +253,67 @@ export function useComparison(
 }
 
 /**
- * Where one video stands in the current run.
+ * Where one video stands, read off its own row.
  *
- * A live run re-checks the *whole* campaign, so while one is in flight every
- * card reads "checking" — the results on screen are about to be replaced, and
- * showing a stale verdict beside a running check would be the wrong kind of
- * confident.
+ * Only a video that is still waiting reads "checking" while a run is live:
+ * a label already written stays true whatever the engine is doing for the
+ * next upload, and greying out the whole campaign for every arrival would
+ * hide the answers people came for.
  */
 export function describeSubmissionCheck(
+  submission: VideoSubmission,
+  parent: VideoSubmission | null,
   comparison: Comparison | null,
   isRunning: boolean,
-  submissionId: string,
   flaggedPairs: ComparisonPair[],
   videoById: Map<string, ComparisonVideo>,
 ): SubmissionCheck {
-  if (isRunning) {
-    return {
-      kind: "running",
-      pairsDone: comparison?.pairsDone ?? 0,
-      pairsTotal: comparison?.pairsTotal ?? 0,
+  const { uniqueness, duplicationCheckedAt: checkedAt } = submission
+
+  if (uniqueness === null) {
+    if (checkedAt !== null) return { kind: "unreadable", checkedAt }
+    if (isRunning) {
+      return {
+        kind: "running",
+        pairsDone: comparison?.pairsDone ?? 0,
+        pairsTotal: comparison?.pairsTotal ?? 0,
+      }
     }
+    // Still waiting with nothing moving: either the batch that should have
+    // reached it failed — in which case that is the news — or it has genuinely
+    // not been looked at.
+    if (
+      comparison !== null &&
+      (comparison.status === "FAILED" || comparison.status === "TIMEOUT")
+    ) {
+      return {
+        kind: "failed",
+        message:
+          comparison.errorMessage ??
+          "The comparison engine did not return a result.",
+      }
+    }
+    return { kind: "none" }
   }
 
-  if (comparison === null) return { kind: "none" }
+  // Borrowed from the latest run only when it actually holds this video.
+  const entry = videoById.get(submission.id)
+  const durationSeconds = entry?.durationSeconds ?? null
+  const when = checkedAt ?? comparison?.completedAt ?? new Date(0).toISOString()
 
-  const entry = videoById.get(submissionId)
-  // Uploaded after this run started, and nothing is running — so it genuinely
-  // has not been looked at. Not the same as "checked and clean".
-  if (entry === undefined) return { kind: "none" }
-
-  if (comparison.status === "FAILED" || comparison.status === "TIMEOUT") {
-    return {
-      kind: "failed",
-      message:
-        comparison.errorMessage ??
-        "The comparison engine did not return a result.",
-    }
-  }
-
-  const checkedAt = comparison.completedAt ?? comparison.createdAt
-
-  if (!entry.ready) return { kind: "unreadable", checkedAt }
-
-  if (flaggedPairs.length === 0) {
+  if (uniqueness === "UNIQUE") {
     return {
       kind: "clean",
-      // Only the videos the engine actually got through: counting the ones it
-      // could not read would overstate what this result covers.
-      comparedWith: [...videoById.values()].filter(
-        (video) => video.ready && video.submissionId !== submissionId,
-      ).length,
-      durationSeconds: entry.durationSeconds,
-      checkedAt,
+      comparedWith:
+        entry === undefined
+          ? null
+          : (comparison?.pairs ?? []).filter(
+              (pair) =>
+                pair.aSubmissionId === submission.id ||
+                pair.bSubmissionId === submission.id,
+            ).length,
+      durationSeconds,
+      checkedAt: when,
     }
   }
 
@@ -302,25 +321,25 @@ export function describeSubmissionCheck(
     .sort((left, right) => right.score - left.score)
     .map((pair) => {
       const otherId =
-        pair.aSubmissionId === submissionId
+        pair.aSubmissionId === submission.id
           ? pair.bSubmissionId
           : pair.aSubmissionId
       return { pair, other: videoById.get(otherId) ?? null }
     })
 
-  const strongest = flaggedPairs.reduce((best, pair) =>
-    VERDICT_STRENGTH[pair.verdict] > VERDICT_STRENGTH[best.verdict] ? pair : best,
-  )
-
   return {
     kind: "flagged",
-    verdict: strongest.verdict,
-    topScore: Math.max(...flaggedPairs.map((pair) => pair.score)),
+    uniqueness,
+    topScore: submission.duplicationScore ?? 0,
     // Reported separately from the score because they answer different
     // questions: a lift from a longer video scores modestly but contains high.
-    topContainment: Math.max(...flaggedPairs.map((pair) => pair.containment)),
-    durationSeconds: entry.durationSeconds,
-    checkedAt,
+    topContainment:
+      flaggedPairs.length === 0
+        ? null
+        : Math.max(...flaggedPairs.map((pair) => pair.containment)),
+    parent,
+    durationSeconds,
+    checkedAt: when,
     matches,
   }
 }

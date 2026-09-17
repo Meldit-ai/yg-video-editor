@@ -77,20 +77,21 @@ export class ComparisonsController {
   }
 
   /**
-   * POST /api/campaigns/:campaignId/comparisons — check every submitted video
-   * against every other, now.
+   * POST /api/campaigns/:campaignId/comparisons — re-label every submitted
+   * video from scratch, in upload order.
    *
-   * Admin-only: it costs real engine time, and an editor cannot see the full
-   * result anyway. Their uploads still trigger a run automatically.
+   * Uploads are classified as they land; this replays the whole campaign
+   * under the current threshold, which is how a threshold change ripples
+   * forward. Admin-only: it costs real engine time, and an editor cannot see
+   * the full result anyway.
    *
-   * Returns as soon as the engine has accepted the work, not when it
-   * finishes: a run takes minutes, and holding the request open for it would
-   * hit every timeout between here and the browser. The caller polls
-   * `latest`.
+   * Returns as soon as the run row exists, not when it finishes: a rebuild
+   * takes minutes, and holding the request open for it would hit every
+   * timeout between here and the browser. The caller polls `latest`.
    */
   @Post()
   @Roles(Role.ADMIN)
   run(@Param("campaignId") campaignId: string): Promise<ComparisonSummaryDto> {
-    return this.comparisons.runForCampaign(campaignId);
+    return this.comparisons.rebuild(campaignId);
   }
 }

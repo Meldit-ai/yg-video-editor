@@ -113,52 +113,87 @@ objects — an unsigned GET on a submitted video answers 200. So the signature
 is not what keeps a video private; the random-uuid key is. Verified, and the
 comparison engine depends on it (see below).
 
-**Duplicate detection is per-campaign, not per-video.** After every upload the
-API asks the comparison engine (`COMPARISON_ENGINE_URL`, default
-`http://127.0.0.1:8080`) to compare *every* active submission on the campaign
-against every other. A new upload starts a fresh run and marks any run still
-in flight `SUPERSEDED`.
+**Duplicate detection is a label per video, decided on arrival.** Every
+submission and every reel gets `uniqueness` ∈ UNIQUE / PARTIAL / DUPLICATE
+by being compared — through the engine at `COMPARISON_ENGINE_URL`, default
+`http://127.0.0.1:8080` — against the campaign's **baseline** only: its
+UNIQUE and PARTIAL videos, in arrival order. DUPLICATEs are never compared
+against (everything in one is already in its parent). Match value =
+highest `max(score, containment)` over the baseline; ≥ the campaign
+threshold → DUPLICATE, ≥ 25 (the engine's NO_MATCH edge) → PARTIAL, else
+UNIQUE; the best-matching baseline video is the parent
+(`topMatchSubmissionId` / `originalReelId`), stored even for UNIQUE so a
+threshold edit can re-label without the engine. `UniquenessService` owns
+all of it; the design is
+`docs/superpowers/specs/2026-09-17-incremental-duplicate-detection-design.md`.
+Four things bite:
 
-**The engine takes at most 4 URLs per call** (`COMPARISON_ENGINE_MAX_URLS`) —
-a 5th is answered with HTTP 422, not a truncated job, so a campaign past four
-videos fails outright unless it is split. `planBatches` cuts the videos into
-blocks of `maxUrls / 2` and submits every *pair of blocks*, which is what
-keeps every pair covered: a run is therefore several `VideoComparisonJob`
-rows, and finishes when all of them do. Batches overlap on purpose, so pairs
-are merged with `skipDuplicates` on `pairKey` (the unordered {a,b} identity)
-rather than replaced — the a/b columns keep the engine's order because
-`evidence` has an A side and a B side.
+- **A row has four states, read off two columns.** `uniqueness` null +
+  `duplicationCheckedAt`/`checkedAt` null = *pending* (the durable work
+  queue — boot sweeps it); null + set = *unreadable* (the engine could not
+  fingerprint it; terminal until a rebuild); set + set = labelled. Never
+  test `duplicationScore !== null` to mean "checked".
+- **Four events touch a label, and all go through `classifyPending`.**
+  Arrival (upload, reel import, reel adoption) classifies what is pending;
+  withdrawal of a UNIQUE/PARTIAL video resets its dependants to pending;
+  the admin "check" buttons are a **rebuild** (reset everything, replay in
+  arrival order — literally the same loop); a threshold edit re-labels from
+  stored values in `CampaignsService.update`'s transaction with zero engine
+  calls, and does *not* ripple forward — that is what the rebuild is for.
+- **Work is serialised per `kind:campaignId`** in an in-process promise
+  queue, because sequencing is the algorithm — the second video's baseline
+  must include the first's label. Calls for one candidate go one at a time
+  so the first fingerprints it and the rest hit the engine's cache.
+- **The latest run is evidence, not truth.** A `VideoComparison` run holds
+  one batch — usually one upload against the baseline, pairs for the
+  candidate's side only — so most videos are not in the latest run, and the
+  UI reads each card's state from its own row (`use-comparison.ts`).
+
+**The engine takes at most 4 URLs per call, and that is its hard cap.**
+`engineMaxUrls()` in `comparison-engine.client.ts` is the one place both
+paths read it (env `COMPARISON_ENGINE_MAX_URLS`, default 4, clamped to 6
+because a job's pair count is quadratic against one shared timeout). Confirm
+the deployed engine before raising it: a 5-URL probe answering 422 means it
+is still 4. `planPinnedCalls` puts the candidate first and `cap − 1`
+baseline videos beside it, so a call covers exactly that many useful pairs;
+pairs among the baseline videos are computed by the engine (cached after the
+first time) and discarded by `matchesOf`. Full-queue refusals (`engine_busy`,
+503) are waited out in `submitWithBackoff`, not reported.
 
 Results are role-scoped in `ComparisonsService.toDto`, not by hiding UI: an
 editor sees the verdict on **their own** videos with the counterpart redacted
 to "Another submission", no evidence and no groups; an admin sees the whole
-matrix. The history list and the manual re-run are `@Roles(Role.ADMIN)`.
+run. The history list and the rebuild are `@Roles(Role.ADMIN)`.
 Five more things bite:
 
 - **The engine is handed the plain, unsigned object URL**
   (`StorageService.publicObjectUrl`), not a presigned one. It derives a
-  video's cache identity by hashing the URL, so a signature — which carries a
-  timestamp — would make the same file look new on every run. This only works
-  because the bucket grants public read on *objects* (an unsigned GET on a
-  submitted video answers 200; listing the bucket is still 403). Presigned
-  playback URLs therefore buy unguessability, not confidentiality — the keys
-  are random uuids, and that is what actually protects a submitted video.
-  Turning object-read off would break this integration.
+  video's cache identity by hashing the URL string, so a signature — which
+  carries a timestamp — would make the same file look new on every run. This
+  only works because the bucket grants public read on *objects* (an unsigned
+  GET on a submitted video answers 200; listing the bucket is still 403).
+  Presigned playback URLs therefore buy unguessability, not confidentiality —
+  the keys are random uuids, and that is what actually protects a submitted
+  video. Turning object-read off would break this integration. The same
+  applies to a reel's `mediaUrl`: never normalise it.
 - **`pairs[].a`/`b` are engine keys, never URLs.** Getting from a pair back to
   a submission takes two hops: key → URL via `result.videos[]`, URL →
-  submission via our own `VideoComparisonEntry` rows. `resolveResult` is the
-  only place that does it.
+  submission via the entries we sent. `resolveResult` in
+  `comparisons/engine-result.ts` is the only place that does it. The engine
+  orders `a`/`b` by its own row ids, not by request order.
 - **A per-video status of `cached` is a success**, not a failure. From the
-  second run of a campaign onwards most videos come back cached, and reading
-  only `ready` as usable reports a healthy re-run as "these could not be
-  read". Appearing in a pair also promotes a video to ready, whatever its
-  status string said.
-- **`result` is null until the job is terminal.** Polling lives in
-  `ComparisonsService`, in-process and one poller per `VideoComparisonJob`, so
-  the browser polls our database rather than the engine; calls left
-  non-terminal are resumed on boot.
+  second call onwards most videos come back cached, and reading only `ready`
+  as usable reports a healthy check as "these could not be read". Appearing
+  in a pair also promotes a video to ready, whatever its status string said.
+- **`result` is null until the job is terminal — except that a `failed` job
+  still carries `result.videos[]`** with per-video statuses, which is how an
+  unreadable candidate is told apart from a timed-out call (retried once,
+  then left pending). `waitForJob` in the client polls to terminal; sleeps
+  go through `common/pause.ts` so vitest's fake timers cover them —
+  `node:timers/promises` is not faked.
 - **`score` is floored at 1.0.** A 1.0 means "no signal at all", not "1%
-  similar". Branch on `verdict`, not on the number.
+  similar". Labels branch on the match value against `PARTIAL_FLOOR` and the
+  threshold, never on the verdict string.
 
 **Node's request timeout is a wall clock, not an idle timeout.** The 5-minute
 default is measured from the first byte of a request to its last, so a healthy

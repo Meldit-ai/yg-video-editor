@@ -1,10 +1,10 @@
 import { Readable } from "node:stream";
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { Role, SubmissionSource } from "@repo/database";
-import { ComparisonsService } from "../comparisons/comparisons.service.js";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { StorageService } from "../storage/storage.service.js";
 import { buildObjectKey } from "../submissions/submissions.constants.js";
+import { UniquenessService } from "../uniqueness/uniqueness.service.js";
 
 /** Reels are short; anything slower than this is a stalled download. */
 const DOWNLOAD_TIMEOUT_MS = 120_000;
@@ -43,7 +43,7 @@ export class ReelAdoptService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
-    private readonly comparisons: ComparisonsService,
+    private readonly uniqueness: UniquenessService,
   ) {}
 
   /**
@@ -130,18 +130,11 @@ export class ReelAdoptService {
       `Adopted ${adopted} reel(s) as submissions on campaign ${campaignId} (${failed} failed)`,
     );
 
-    // One comparison over the widened set, after every upload rather than per
-    // upload: the run compares the whole campaign anyway, so triggering it
-    // fifty times would supersede itself forty-nine times over.
-    if (adopted > 0) {
-      // Fire and forget, like the upload path: the run takes minutes, and
-      // awaiting it would hold this response open past every timeout between
-      // here and the browser.
-      void this.comparisons.runForCampaign(campaignId).catch((caught: unknown) => {
-        const reason = caught instanceof Error ? caught.message : String(caught);
-        this.logger.warn(`Could not start the duplicate check: ${reason}`);
-      });
-    }
+    // One classification batch after every copy has landed rather than one
+    // per reel: the batch picks up everything pending in arrival order, and
+    // fire-and-forget like the upload path — awaiting it would hold this
+    // response open past every timeout between here and the browser.
+    if (adopted > 0) this.uniqueness.onArrival("submission", campaignId);
 
     return { campaignId, adopted, alreadyAdopted, failed, totalSubmissions };
   }

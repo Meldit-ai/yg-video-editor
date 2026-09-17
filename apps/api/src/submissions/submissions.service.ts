@@ -4,18 +4,23 @@ import {
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
-import { Role, SubmissionSource, type Prisma } from "@repo/database";
+import {
+  Role,
+  SubmissionSource,
+  Uniqueness,
+  type Prisma,
+} from "@repo/database";
 import type {
   ListSubmissionsQueryDto,
   SubmissionSort,
 } from "./dto/list-submissions-query.dto.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
-import { ComparisonsService } from "../comparisons/comparisons.service.js";
 import { PrismaService } from "../prisma/prisma.service.js";
 import {
   PLAYBACK_URL_TTL_SECONDS,
   StorageService,
 } from "../storage/storage.service.js";
+import { UniquenessService } from "../uniqueness/uniqueness.service.js";
 import {
   displayFileName,
   resolveContentType,
@@ -53,7 +58,7 @@ export class SubmissionsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
-    private readonly comparisons: ComparisonsService,
+    private readonly uniqueness: UniquenessService,
   ) {}
 
   /**
@@ -131,12 +136,12 @@ export class SubmissionsService {
       throw error;
     }
 
-    // Fire and forget, deliberately. The comparison runs against every video
-    // on the campaign — this one and the ones already there — and takes
-    // minutes; awaiting it would hold the upload response open past every
-    // timeout between here and the browser. It never throws, so an engine
-    // that is down cannot turn a stored video into a failed submission.
-    this.comparisons.triggerAfterUpload(campaignId, row.id);
+    // Fire and forget, deliberately. The check compares this video against
+    // the campaign's baseline and takes minutes; awaiting it would hold the
+    // upload response open past every timeout between here and the browser.
+    // It never throws, so an engine that is down cannot turn a stored video
+    // into a failed submission.
+    this.uniqueness.onArrival("submission", campaignId);
 
     // Outside the try: the row exists by now, and a failure to sign a URL must
     // not delete a video that was successfully submitted.
@@ -170,6 +175,16 @@ export class SubmissionsService {
       data: { active: false },
       include: WITH_EDITOR,
     });
+
+    // Only a video in the baseline can have others labelled against it. A
+    // DUPLICATE was never compared against, and an unchecked one has no
+    // dependants yet.
+    if (
+      existing.uniqueness === Uniqueness.UNIQUE ||
+      existing.uniqueness === Uniqueness.PARTIAL
+    ) {
+      this.uniqueness.withdraw("submission", campaignId, submissionId);
+    }
     return this.toDto(row);
   }
 
@@ -206,6 +221,7 @@ export class SubmissionsService {
       createdAt: row.createdAt,
       editorId: row.editorId,
       editorName: row.editor.name,
+      uniqueness: row.uniqueness,
       duplicationScore: row.duplicationScore,
       averageDuplicationScore: row.averageDuplicationScore,
       topMatchSubmissionId: row.topMatchSubmissionId,
@@ -222,9 +238,12 @@ export class SubmissionsService {
 /**
  * Prisma ordering for one of the feed's sorts.
  *
- * `nulls: "last"` is the load-bearing part: a video no run has reached yet has
- * a null score, and Postgres sorts nulls first ascending. Without it the feed
- * would open with unchecked videos presented as the most original ones.
+ * The label goes first — the enum is declared UNIQUE, PARTIAL, DUPLICATE and
+ * Postgres sorts an enum by declaration order — and the match value breaks
+ * ties within a label. `nulls: "last"` is the load-bearing part: a video no
+ * check has reached yet has a null label and score, and Postgres sorts nulls
+ * first ascending. Without it the feed would open with unchecked videos
+ * presented as the most original ones.
  */
 function orderFor(
   sort: SubmissionSort | undefined,
@@ -232,11 +251,13 @@ function orderFor(
   switch (sort) {
     case "original":
       return [
+        { uniqueness: { sort: "asc", nulls: "last" } },
         { duplicationScore: { sort: "asc", nulls: "last" } },
         { createdAt: "desc" },
       ];
     case "duplicate":
       return [
+        { uniqueness: { sort: "desc", nulls: "last" } },
         { duplicationScore: { sort: "desc", nulls: "last" } },
         { createdAt: "desc" },
       ];

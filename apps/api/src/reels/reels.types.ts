@@ -2,6 +2,7 @@
  * Wire types for campaign reels and duplicate checking. Mirrored in
  * apps/web/src/lib/types.ts — keep the two in step.
  */
+import type { Uniqueness } from "@repo/database";
 
 export interface CampaignReelDto {
   id: string;
@@ -19,17 +20,22 @@ export interface CampaignReelDto {
   postCounts: unknown;
 
   /**
-   * How duplicated this reel is, 0-100.
-   *
-   * Measured only against reels posted BEFORE it, so the earliest reel in a
-   * group is the original at 0 and every later copy carries a score. Null
-   * means it has not been checked yet.
+   * Where this reel stands against the reels posted before it — null while
+   * it is still to be checked, or when the engine could not read it (then
+   * `checkedAt` is set). See CampaignReel.uniqueness.
+   */
+  uniqueness: Uniqueness | null;
+  /**
+   * Match value, 0-100: the highest max(score, containment) against any
+   * baseline reel posted before it. Null means not checked yet; 0 means
+   * there was nothing to compare against.
    */
   duplicationScore: number | null;
-  /** The earlier reel it scored highest against. */
+  /** The earlier reel it scored highest against — its parent when not UNIQUE. */
   originalReelId: string | null;
+  /** The parent's profile, when this reel is PARTIAL or DUPLICATE. */
   originalUsername: string | null;
-  /** True when nothing earlier matched it — this is the original. */
+  /** Derived: `uniqueness === "UNIQUE"`. Kept one release for the reels page. */
   isOriginal: boolean;
   checkedAt: Date | null;
 }

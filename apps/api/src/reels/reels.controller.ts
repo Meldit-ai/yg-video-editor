@@ -62,11 +62,13 @@ export class ReelsController {
   }
 
   /**
-   * POST .../reels/check — compare every reel against the ones posted before it.
+   * POST .../reels/check — re-label every reel from scratch, in post order.
    *
-   * Returns as soon as the run exists, because a first pass takes the better
-   * part of an hour. Poll GET .../reels/check for progress, and GET .../reels
-   * for the scores, which are written as each reel finishes.
+   * Reels are classified as they are imported; this replays the whole
+   * campaign under the current threshold. Returns as soon as the run exists,
+   * because a first pass takes the better part of an hour. Poll
+   * GET .../reels/check for progress, and GET .../reels for the labels, which
+   * are written as each reel finishes.
    */
   @Post("check")
   runCheck(@Param("campaignId") campaignId: string): Promise<ReelCheckRunDto> {
@@ -77,9 +79,8 @@ export class ReelsController {
    * POST .../reels/adopt — copy imported reels in as video submissions.
    *
    * From then on a reel is an ordinary submission: it appears in the campaign
-   * feed, is scored by the same duplicate check as an editor's upload, and can
-   * be shared with vendors. A duplicate check over the campaign starts once
-   * the copying finishes.
+   * feed, is labelled by the same classifier as an editor's upload, and can
+   * be shared with vendors. Classification starts once the copying finishes.
    */
   @Post("adopt")
   adoptReels(

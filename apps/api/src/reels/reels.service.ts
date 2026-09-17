@@ -1,7 +1,8 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
-import type { Prisma } from "@repo/database";
+import { Uniqueness, type Prisma } from "@repo/database";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { TrackerService, type TrackerReel } from "../tracker/tracker.service.js";
+import { UniquenessService } from "../uniqueness/uniqueness.service.js";
 import type { CampaignReelDto, ReelImportResultDto } from "./reels.types.js";
 
 const WITH_ORIGINAL = {
@@ -14,6 +15,7 @@ const WITH_ORIGINAL = {
     postedAt: true,
     caption: true,
     postCounts: true,
+    uniqueness: true,
     duplicationScore: true,
     originalReelId: true,
     isOriginal: true,
@@ -28,8 +30,8 @@ type ReelRow = Prisma.CampaignReelGetPayload<typeof WITH_ORIGINAL>;
  *
  * An import takes the campaign whole. Holding a subset is not a cheaper version
  * of the same thing: originality is decided by post date, so a missing earlier
- * reel silently promotes a copy. Whatever bound the check wants belongs on the
- * check — this only decides what is on record.
+ * reel silently promotes a copy. Whatever bound the classifier wants belongs on
+ * the classifier — this only decides what is on record.
  *
  * Instagram only, by `post_type`. The same campaign carries Twitter, Reddit and
  * Facebook posts, including Facebook reels, and none of them belong here.
@@ -41,6 +43,7 @@ export class ReelsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tracker: TrackerService,
+    private readonly uniqueness: UniquenessService,
   ) {}
 
   /**
@@ -49,7 +52,7 @@ export class ReelsService {
    * The whole campaign, not a window. Which reel is the original is decided by
    * post date, so holding a subset would crown whichever copy happened to be
    * the oldest one imported — the earliest reel has to be present for any of
-   * the later ones to be read correctly.
+   * the later ones to be classified correctly.
    *
    * Ordering is the tracker's, by post date ascending; the local sort below is
    * what guarantees it rather than assuming upstream honoured the request.
@@ -74,7 +77,6 @@ export class ReelsService {
     // unknown cannot be shown to precede anything, so it must not be allowed
     // to claim the original's place.
     const ordered = [...fetched].sort(compareByPostedAt);
-
     // One read for the whole campaign instead of one per reel. At a few
     // thousand reels the per-row lookup this replaces was the slowest part of
     // an import that otherwise only writes.
@@ -101,8 +103,8 @@ export class ReelsService {
               },
             },
             create: { campaignId, ...toRow(reel) },
-            // Scores are deliberately not cleared on re-import: re-running an
-            // import must not throw away a check that already ran.
+            // Labels are deliberately not cleared on re-import: re-running an
+            // import must not throw away a classification that already ran.
             update: toRow(reel),
           }),
         ),
@@ -122,6 +124,11 @@ export class ReelsService {
       `Imported ${imported} new and updated ${updated} reel(s) for "${campaign.title}" (${totalReels} stored)`,
     );
 
+    // New reels arrive unlabelled and are classified in the background, in
+    // post order, against what the campaign already holds. A re-imported reel
+    // keeps its label (`toRow` never touches it), so only new ones are work.
+    if (imported > 0) this.uniqueness.onArrival("reel", campaignId);
+
     return {
       campaignId,
       totalReels,
@@ -134,7 +141,8 @@ export class ReelsService {
   }
 
   /**
-   * A campaign's stored reels, most original first.
+   * A campaign's stored reels, most original first: by label (the enum is
+   * declared UNIQUE, PARTIAL, DUPLICATE), then by match value within it.
    *
    * Unchecked reels sort last rather than first: Postgres orders nulls first
    * ascending, which would open the list with reels nobody has looked at,
@@ -145,6 +153,7 @@ export class ReelsService {
       where: { campaignId, active: true },
       ...WITH_ORIGINAL,
       orderBy: [
+        { uniqueness: { sort: "asc", nulls: "last" } },
         { duplicationScore: { sort: "asc", nulls: "last" } },
         { postedAt: "asc" },
       ],
@@ -218,10 +227,13 @@ function toDto(
     postedAt: row.postedAt,
     caption: row.caption,
     postCounts: row.postCounts,
+    uniqueness: row.uniqueness,
     duplicationScore: row.duplicationScore,
     originalReelId: row.originalReelId,
+    // A UNIQUE reel may still carry its best match — bookkeeping for a later
+    // threshold edit — but it was not copied from anyone.
     originalUsername:
-      row.originalReelId === null
+      row.originalReelId === null || row.uniqueness === Uniqueness.UNIQUE
         ? null
         : (usernameById.get(row.originalReelId) ?? null),
     isOriginal: row.isOriginal,

@@ -1,5 +1,10 @@
 import { cn } from "@/lib/utils"
-import type { CampaignStatus, ComparisonVerdict, Role } from "@/lib/types"
+import type {
+  CampaignStatus,
+  ComparisonVerdict,
+  Role,
+  Uniqueness,
+} from "@/lib/types"
 
 /**
  * A small filled dot. Colour carries the state, so the label beside it stays
@@ -124,6 +129,84 @@ export function ComparisonVerdictBadge({
 /** The same wording, unstyled — for sentences and tooltips. */
 export function verdictLabel(verdict: ComparisonVerdict): string {
   return VERDICT[verdict].label
+}
+
+/**
+ * How each uniqueness label is worded and coloured.
+ *
+ * DUPLICATE is the only one stated as an accusation. PARTIAL means "shares
+ * something with an earlier video, below the line the admin drew" — worth a
+ * look, not a verdict — so it gets the warning tone rather than the red.
+ */
+const UNIQUENESS: Record<
+  Uniqueness,
+  { label: string; pill: string; dot: string }
+> = {
+  UNIQUE: {
+    label: "Unique",
+    pill: "border-success/25 bg-success/10 text-success",
+    dot: "bg-success",
+  },
+  PARTIAL: {
+    label: "Partial",
+    pill: "border-warning/30 bg-warning/10 text-warning",
+    dot: "bg-warning",
+  },
+  DUPLICATE: {
+    label: "Duplicate",
+    pill: "border-destructive/30 bg-destructive/10 text-destructive",
+    dot: "bg-destructive",
+  },
+}
+
+/**
+ * A video's label, with its match value beside it where there is one worth
+ * showing. `null` is "not checked" — either still queued or unreadable; the
+ * caller decides which wording it wants via `pendingLabel`.
+ */
+export function UniquenessBadge({
+  uniqueness,
+  value,
+  pendingLabel = "Not checked",
+  className,
+}: {
+  uniqueness: Uniqueness | null
+  /** The match value, shown as a percentage for PARTIAL and DUPLICATE. */
+  value?: number | null
+  pendingLabel?: string
+  className?: string
+}) {
+  if (uniqueness === null) {
+    return (
+      <span
+        className={cn(
+          PILL,
+          "border-border bg-muted/40 text-muted-foreground",
+          className,
+        )}
+      >
+        <Dot className="bg-muted-foreground" />
+        {pendingLabel}
+      </span>
+    )
+  }
+  const style = UNIQUENESS[uniqueness]
+  const showValue =
+    uniqueness !== "UNIQUE" && value !== undefined && value !== null
+  return (
+    <span className={cn(PILL, style.pill, className)}>
+      <Dot className={style.dot} />
+      {style.label}
+      {showValue ? (
+        <span className="numeric opacity-80">· {Math.round(value)}%</span>
+      ) : null}
+    </span>
+  )
+}
+
+/** The same wording, unstyled — for sentences and tooltips. */
+export function uniquenessLabel(uniqueness: Uniqueness): string {
+  return UNIQUENESS[uniqueness].label
 }
 
 /**

@@ -3,7 +3,7 @@ import { Role } from "@repo/database";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
 import type { PrismaService } from "../prisma/prisma.service.js";
-import type { ComparisonsService } from "../comparisons/comparisons.service.js";
+import type { UniquenessService } from "../uniqueness/uniqueness.service.js";
 import type { StorageService } from "../storage/storage.service.js";
 import { SubmissionsService } from "./submissions.service.js";
 
@@ -27,10 +27,10 @@ const storageMock = {
 
 const storage = storageMock as unknown as StorageService;
 
-/** The duplicate check is fire-and-forget, so the spy is only ever asserted
- *  on for whether it was called — never awaited. */
-const comparisonsMock = { triggerAfterUpload: vi.fn() };
-const comparisons = comparisonsMock as unknown as ComparisonsService;
+/** The duplicate check is fire-and-forget, so the spies are only ever
+ *  asserted on for whether they were called — never awaited. */
+const uniquenessMock = { onArrival: vi.fn(), withdraw: vi.fn() };
+const uniqueness = uniquenessMock as unknown as UniquenessService;
 
 const row = (overrides: Record<string, unknown> = {}) => ({
   id: "sub_1",
@@ -80,7 +80,7 @@ describe("SubmissionsService", () => {
     storageMock.presignPlaybackUrl.mockResolvedValue(
       "https://signed.example/v",
     );
-    service = new SubmissionsService(prisma, storage, comparisons);
+    service = new SubmissionsService(prisma, storage, uniqueness);
   });
 
   describe("findAll", () => {
@@ -109,9 +109,12 @@ describe("SubmissionsService", () => {
 
       expect(submissionDelegate.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          // nulls last, or videos no run has reached yet would open the feed
-          // presented as the most original ones.
+          // Label first — UNIQUE, PARTIAL, DUPLICATE is the enum's declared
+          // order — then by match value within a label. Nulls last, or videos
+          // no check has reached yet would open the feed presented as the
+          // most original ones.
           orderBy: [
+            { uniqueness: { sort: "asc", nulls: "last" } },
             { duplicationScore: { sort: "asc", nulls: "last" } },
             { createdAt: "desc" },
           ],
@@ -127,6 +130,7 @@ describe("SubmissionsService", () => {
       expect(submissionDelegate.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           orderBy: [
+            { uniqueness: { sort: "desc", nulls: "last" } },
             { duplicationScore: { sort: "desc", nulls: "last" } },
             { createdAt: "desc" },
           ],
@@ -221,6 +225,14 @@ describe("SubmissionsService", () => {
       );
     });
 
+    it("hands the new video to the classifier without waiting for it", async () => {
+      submissionDelegate.create.mockResolvedValue(row());
+
+      await service.create("cmp_1", editor, upload());
+
+      expect(uniquenessMock.onArrival).toHaveBeenCalledWith("submission", "cmp_1");
+    });
+
     it("stores the display name, never a path from the uploader's machine", async () => {
       submissionDelegate.create.mockResolvedValue(row());
 
@@ -289,6 +301,30 @@ describe("SubmissionsService", () => {
       );
       // Soft delete means the bytes stay: nothing here removes an object.
       expect(storageMock.removeObject).not.toHaveBeenCalled();
+    });
+
+    it("tells the classifier when a video others were labelled against goes away", async () => {
+      for (const uniquenessLabel of ["UNIQUE", "PARTIAL"]) {
+        uniquenessMock.withdraw.mockClear();
+        submissionDelegate.findFirst.mockResolvedValue(row({ uniqueness: uniquenessLabel }));
+        submissionDelegate.update.mockResolvedValue(row({ active: false }));
+
+        await service.remove("cmp_1", "sub_1", editor);
+
+        expect(uniquenessMock.withdraw).toHaveBeenCalledWith("submission", "cmp_1", "sub_1");
+      }
+    });
+
+    it("does not bother the classifier for a DUPLICATE or an unchecked video", async () => {
+      for (const uniquenessLabel of ["DUPLICATE", null]) {
+        uniquenessMock.withdraw.mockClear();
+        submissionDelegate.findFirst.mockResolvedValue(row({ uniqueness: uniquenessLabel }));
+        submissionDelegate.update.mockResolvedValue(row({ active: false }));
+
+        await service.remove("cmp_1", "sub_1", editor);
+
+        expect(uniquenessMock.withdraw).not.toHaveBeenCalled();
+      }
     });
 
     it("looks the row up within the caller's scope", async () => {

@@ -15,6 +15,7 @@ import { toast } from "sonner"
 
 import { EmptyState } from "@/components/empty-state"
 import { MetaDivider, PageHeader } from "@/components/page-header"
+import { UniquenessBadge } from "@/components/status-badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -83,7 +84,7 @@ export function CampaignReelsPage() {
     setImporting(true)
     try {
       // No limit: the import takes the campaign whole, because the earliest
-      // reel is what every later one is read against.
+      // reel is what every later one is classified against.
       const result = await api.post<ReelImportResult>(
         `/campaigns/${id}/reels/import`,
         {},
@@ -92,9 +93,10 @@ export function CampaignReelsPage() {
         `${result.imported} new reel${result.imported === 1 ? "" : "s"} imported`,
         {
           description:
-            result.skipped > 0
+            (result.imported > 0 ? "Checking them in the background. " : "") +
+            (result.skipped > 0
               ? `${result.totalReels} stored. ${result.skipped.toLocaleString()} more are available on the tracker.`
-              : `${result.totalReels} stored.`,
+              : `${result.totalReels} stored.`),
         },
       )
       await refresh()
@@ -109,8 +111,8 @@ export function CampaignReelsPage() {
     setStarting(true)
     try {
       setRun(await api.post<ReelCheckRun>(`/campaigns/${id}/reels/check`, {}))
-      toast.success("Checking for duplicates", {
-        description: "Scores appear as each reel is checked.",
+      toast.success("Re-checking every reel", {
+        description: "Labels appear as each reel is checked, in post order.",
       })
     } catch (caught) {
       toast.error(errorMessage(caught))
@@ -119,8 +121,9 @@ export function CampaignReelsPage() {
     }
   }
 
-  const checked = reels.filter((reel) => reel.duplicationScore !== null)
-  const copies = checked.filter((reel) => !reel.isOriginal)
+  const checked = reels.filter((reel) => reel.uniqueness !== null)
+  const copies = checked.filter((reel) => reel.uniqueness === "DUPLICATE")
+  const partials = checked.filter((reel) => reel.uniqueness === "PARTIAL")
 
   return (
     <motion.div
@@ -139,7 +142,7 @@ export function CampaignReelsPage() {
 
       <PageHeader
         title={campaign?.title ?? "Instagram reels"}
-        description="Reels pulled from the tracker, checked against each other. The earliest post of a video is the original; later copies are scored against it."
+        description="Reels pulled from the tracker, each checked against the ones posted before it. The earliest post of a video is the original; later copies are labelled against it."
         meta={
           campaign === null ? null : (
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -182,7 +185,7 @@ export function CampaignReelsPage() {
               ) : (
                 <ScanSearchIcon />
               )}
-              {isRunning ? "Checking" : "Check duplicates"}
+              {isRunning ? "Checking" : checked.length > 0 ? "Re-check all" : "Check duplicates"}
             </Button>
           </div>
         }
@@ -212,6 +215,7 @@ export function CampaignReelsPage() {
             total={reels.length}
             checked={checked.length}
             copies={copies.length}
+            partials={partials.length}
             threshold={campaign?.duplicationThreshold ?? 0}
           />
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -285,15 +289,17 @@ function SummaryRow({
   total,
   checked,
   copies,
+  partials,
   threshold,
 }: {
   total: number
   checked: number
   copies: number
+  partials: number
   threshold: number
 }) {
   return (
-    <div className="grid gap-3 sm:grid-cols-3">
+    <div className="grid gap-3 sm:grid-cols-4">
       <Stat label="Reels imported" value={String(total)} />
       <Stat
         label="Checked"
@@ -305,6 +311,11 @@ function SummaryRow({
         value={String(copies)}
         hint={`At or above ${threshold}%`}
         tone={copies > 0 ? "warning" : "default"}
+      />
+      <Stat
+        label="Partial matches"
+        value={String(partials)}
+        hint={`Resemble an earlier reel, below ${threshold}%`}
       />
     </div>
   )
@@ -346,7 +357,7 @@ function Stat({
 function ReelCard({ reel, rank }: { reel: CampaignReel; rank: number }) {
   const [isUnplayable, setUnplayable] = useState(false)
   const views = reel.postCounts?.views ?? reel.postCounts?.reach ?? null
-  const isCopy = !reel.isOriginal && reel.duplicationScore !== null
+  const isCopy = reel.uniqueness === "DUPLICATE"
 
   return (
     <div
@@ -412,7 +423,7 @@ function ReelCard({ reel, rank }: { reel: CampaignReel; rank: number }) {
         {reel.originalUsername !== null && (
           <span className="inline-flex items-center gap-1 text-[12px] text-[var(--warning)]">
             <CopyIcon className="size-3" />
-            copy of @{reel.originalUsername}
+            {isCopy ? "copy of" : "partly matches"} @{reel.originalUsername}
           </span>
         )}
       </div>
@@ -421,33 +432,19 @@ function ReelCard({ reel, rank }: { reel: CampaignReel; rank: number }) {
 }
 
 /**
- * The verdict.
- *
- * Not-yet-checked is its own state and says so: a reel nobody has looked at is
- * not an original, and showing it as one would be a claim the data does not
- * support.
+ * The verdict. Not-yet-checked is its own state and says so: a reel nobody
+ * has looked at is not an original, and showing it as one would be a claim
+ * the data does not support. "Unreadable" is a reel the engine could not
+ * fetch or decode — checked, but with nothing to say.
  */
 function ScoreBadge({ reel }: { reel: CampaignReel }) {
-  if (reel.duplicationScore === null) {
-    return (
-      <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
-        Not checked
-      </span>
-    )
-  }
-
-  if (reel.isOriginal) {
-    return (
-      <span className="shrink-0 rounded bg-[color-mix(in_oklch,var(--success)_16%,transparent)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--success)]">
-        Original
-      </span>
-    )
-  }
-
   return (
-    <span className="numeric shrink-0 rounded bg-[color-mix(in_oklch,var(--warning)_18%,transparent)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--warning)]">
-      {reel.duplicationScore}% copy
-    </span>
+    <UniquenessBadge
+      uniqueness={reel.uniqueness}
+      value={reel.duplicationScore}
+      pendingLabel={reel.checkedAt === null ? "Not checked" : "Unreadable"}
+      className="shrink-0"
+    />
   )
 }
 

@@ -58,6 +58,13 @@ export interface Campaign {
  * A video an editor has handed in against a campaign brief. Mirrors
  * apps/api/src/submissions/submissions.types.ts.
  */
+/**
+ * A video's label against everything that arrived on its campaign before it.
+ * UNIQUE: nothing resembled it. PARTIAL: resembles a baseline video, below the
+ * campaign threshold. DUPLICATE: at or above it. Mirrors the Prisma enum.
+ */
+export type Uniqueness = "UNIQUE" | "PARTIAL" | "DUPLICATE"
+
 export interface VideoSubmission {
   id: string
   campaignId: string
@@ -70,13 +77,21 @@ export interface VideoSubmission {
   /** Who submitted it. An editor only ever sees their own rows. */
   editorName: string
   /**
-   * Duplication roll-up. Null means not compared yet; 0 means compared and
-   * matched nothing — the two are different states, so do not coalesce them.
+   * Where this video stands against the campaign's baseline. Read with
+   * `duplicationCheckedAt`: null + null is "still to be checked", null with a
+   * checked-at is "the engine could not read it", and a label is a label.
+   */
+  uniqueness: Uniqueness | null
+  /**
+   * Match value: the highest max(score, containment) against any baseline
+   * video. Null means not checked yet; 0 means there was nothing to compare
+   * against — the two are different states, so do not coalesce them.
    */
   duplicationScore: number | null
   averageDuplicationScore: number | null
+  /** The baseline video it scored highest against — the parent when not UNIQUE. */
   topMatchSubmissionId: string | null
-  /** Whether it met the campaign's threshold when the run closed. */
+  /** Derived: `uniqueness === "DUPLICATE"`. Prefer `uniqueness`. */
   overThreshold: boolean
   duplicationCheckedAt: string | null
   /**
@@ -420,3 +435,61 @@ export interface ReelCheckRun {
  */
 export const MAX_SHARE_MEDIA = 24
 export const MAX_SHARE_VENDORS = 250
+
+/* ------------------------------------------------------ campaign reels */
+
+/** Mirrors apps/api/src/reels/reels.types.ts. */
+export interface CampaignReel {
+  id: string
+  username: string
+  socialUsername: string
+  permalink: string | null
+  /** The reel's own .mp4 — public, so it plays without signing. */
+  mediaUrl: string
+  /** When it went live on Instagram — half the evidence of who posted first. */
+  postedAt: string | null
+  caption: string | null
+  postCounts: {
+    likes?: number
+    views?: number
+    reach?: number
+    comments?: number
+  } | null
+  /** Where this reel stands against the reels posted before it. See VideoSubmission. */
+  uniqueness: Uniqueness | null
+  /**
+   * Match value, 0-100, against the baseline of reels posted BEFORE it. Null
+   * means it has not been checked yet — which is not the same as 0.
+   */
+  duplicationScore: number | null
+  originalReelId: string | null
+  /** The profile it was copied from — set for PARTIAL and DUPLICATE only. */
+  originalUsername: string | null
+  /** Derived: `uniqueness === "UNIQUE"`. Prefer `uniqueness`. */
+  isOriginal: boolean
+  checkedAt: string | null
+}
+
+export interface ReelImportResult {
+  campaignId: string
+  totalReels: number
+  imported: number
+  updated: number
+  /** Reels the tracker offered beyond the window that was asked for. */
+  skipped: number
+}
+
+export interface ReelCheckRun {
+  id: string
+  campaignId: string
+  status: ComparisonStatus
+  threshold: number
+  reelCount: number
+  pairsDone: number
+  pairsTotal: number
+  /** Reels found to be a copy of something earlier. */
+  matchCount: number
+  errorMessage: string | null
+  createdAt: string
+  completedAt: string | null
+}
