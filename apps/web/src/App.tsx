@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/card"
 import { CampaignDetailPage } from "@/pages/campaign-detail-page"
 import { EditorDashboardPage } from "@/pages/editor-dashboard-page"
+import { CampaignMatchesPage } from "@/pages/campaign-matches-page"
 import { CampaignReelsPage } from "@/pages/campaign-reels-page"
 import { CampaignFeedPage } from "@/pages/campaign-feed-page"
 import { CampaignsPage } from "@/pages/campaigns-page"
@@ -71,6 +72,10 @@ const router = createBrowserRouter([
               // editor is never allowed to see.
               { path: "campaigns/:id/feed", element: <CampaignFeedPage /> },
               { path: "campaigns/:id/reels", element: <CampaignReelsPage /> },
+              {
+                path: "campaigns/:id/matches",
+                element: <CampaignMatchesPage />,
+              },
               { path: "vendors", element: <VendorsPage /> },
               { path: "users", element: <UsersPage /> },
             ],

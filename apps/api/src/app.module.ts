@@ -5,6 +5,7 @@ import { PrismaModule } from "./prisma/prisma.module.js";
 import { UsersModule } from "./users/users.module.js";
 import { CampaignsModule } from "./campaigns/campaigns.module.js";
 import { SubmissionsModule } from "./submissions/submissions.module.js";
+import { MatchesModule } from "./matches/matches.module.js";
 import { ReelsModule } from "./reels/reels.module.js";
 import { SharesModule } from "./shares/shares.module.js";
 import { DashboardModule } from "./dashboard/dashboard.module.js";
@@ -27,6 +28,7 @@ import { RolesGuard } from "./auth/guards/roles.guard.js";
     UniquenessModule,
     DashboardModule,
     SharesModule,
+    MatchesModule,
     ReelsModule,
     TrackerModule,
     VendorsModule,

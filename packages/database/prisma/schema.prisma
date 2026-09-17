@@ -98,6 +98,7 @@ model Campaign {
 
   /// Instagram reels pulled from the tracker, and the runs matching against them.
   reels     CampaignReel[]
+  crossPlatformMatches CrossPlatformMatch[]
   reelMatchRuns ReelMatchRun[]
 
   @@index([active])
@@ -154,6 +155,17 @@ model VideoSubmission {
   /// client. Int is deliberate: uploads are capped below 2 GB.
   sizeBytes Int
 
+  /// SHA-256 of the stored bytes, lowercase hex.
+  ///
+  /// Identity, not similarity: it answers "is this the very same file" and
+  /// nothing weaker. That is enough to match an editor's cut against the
+  /// Instagram reel of it when the reel is a straight repost — measured on
+  /// this campaign, five accounts posted one file byte for byte — and it is
+  /// deliberately blind to a re-encode, which is the engine's job.
+  ///
+  /// Null until hashed; hashing reads the object once and never again.
+  contentHash String?
+
   /// The label, or null. Read together with `duplicationCheckedAt`:
   /// null + null = pending (will be classified by the next sweep);
   /// null + set  = unreadable (the engine could not fingerprint it — terminal
@@ -200,14 +212,70 @@ model VideoSubmission {
   /// Reel matches this video is one side of.
   reelMatchPairs   ReelMatchPair[]
 
+  crossPlatformMatches CrossPlatformMatch[]
   @@index([campaignId, active])
   @@index([editorId])
   /// Backs the campaign feed's most-original-first ordering.
   @@index([campaignId, active, duplicationScore])
   /// The feed reads one workflow at a time, never both at once.
   @@index([campaignId, active, source])
+  /// The cross-platform match: find the reel carrying these exact bytes.
+  @@index([campaignId, contentHash])
   /// Backs the baseline query (UNIQUE and PARTIAL rows of a campaign).
   @@index([campaignId, active, uniqueness])
+}
+
+/// Which side of a cross-platform match was published first.
+enum MatchOrigin {
+  EDITOR
+  REEL
+  /// The reel carries no post date, so neither side can be shown to precede
+  /// the other. Recorded rather than guessed: naming the wrong side the
+  /// original accuses the wrong party of copying.
+  UNKNOWN
+}
+
+/// One editor upload and one Instagram reel found to be the very same file.
+///
+/// Identity, not similarity — the pair shares a SHA-256, so this is a straight
+/// repost rather than a resemblance. A re-encode changes every byte and is
+/// invisible here by design; that case belongs to the comparison engine.
+///
+/// Stored rather than recomputed because hashing a campaign's thousands of
+/// videos is minutes of downloads, and the answer does not change until new
+/// videos arrive.
+model CrossPlatformMatch {
+  id String @id @default(cuid())
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  submissionId String
+  submission   VideoSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  reelId String
+  reel   CampaignReel @relation(fields: [reelId], references: [id], onDelete: Cascade)
+
+  /// The bytes both sides share, lowercase hex.
+  contentHash String
+
+  /// Which side went public first — the original.
+  origin MatchOrigin
+
+  /// Copied onto the row so the finding still reads correctly if a reel's
+  /// date is later corrected upstream.
+  uploadedAt DateTime
+  postedAt   DateTime?
+
+  active Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// One row per pair, so re-running a match updates rather than duplicates.
+  @@unique([submissionId, reelId])
+  @@index([campaignId, active])
+  @@index([campaignId, active, origin])
 }
 
 /// Outcome band for one compared pair, straight from the engine's own bands:
@@ -536,6 +604,10 @@ model CampaignReel {
   permalink String?
   mediaUrl  String
 
+  /// SHA-256 of the reel's bytes, lowercase hex. See VideoSubmission for what
+  /// this is and is not. Null until hashed.
+  contentHash String?
+
   /// When it went live on Instagram. Null when upstream sent nothing usable.
   /// Half of the evidence a human needs to tell who posted first.
   postedAt DateTime?
@@ -576,7 +648,10 @@ model CampaignReel {
 
   matchPairs ReelMatchPair[]
 
+  crossPlatformMatches CrossPlatformMatch[]
   @@unique([campaignId, trackerPostId])
+  /// The cross-platform match: find the upload carrying these exact bytes.
+  @@index([campaignId, contentHash])
   @@index([campaignId, active])
   @@index([campaignId, username])
   /// Backs the baseline query (UNIQUE and PARTIAL rows of a campaign).

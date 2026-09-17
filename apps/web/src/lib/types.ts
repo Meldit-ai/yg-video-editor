@@ -493,3 +493,33 @@ export interface ReelCheckRun {
   createdAt: string
   completedAt: string | null
 }
+
+/** Mirrors apps/api/src/matches/matches.types.ts. */
+export type MatchOrigin = "EDITOR" | "REEL" | "UNKNOWN"
+
+/** One editor upload and one Instagram reel carrying identical bytes. */
+export interface CrossPlatformMatch {
+  id: string
+  submissionId: string
+  fileName: string
+  editorName: string
+  uploadedAt: string
+  reelId: string
+  username: string
+  permalink: string | null
+  postedAt: string | null
+  /** Which side was published first. UNKNOWN when the reel has no date. */
+  origin: MatchOrigin
+  contentHash: string
+  checkedAt: string
+}
+
+export interface MatchRunResult {
+  campaignId: string
+  hashedSubmissions: number
+  hashedReels: number
+  /** Reels still without a hash, so the caller knows to run again. */
+  unhashedReels: number
+  matchCount: number
+  matches: CrossPlatformMatch[]
+}
