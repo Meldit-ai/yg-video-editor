@@ -4,7 +4,10 @@ import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { toWhatsAppNumber } from "../common/phone.js";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { StorageService } from "../storage/storage.service.js";
-import type { CreateShareDto } from "./dto/create-share.dto.js";
+import {
+  WHATSAPP_BODY_LIMIT,
+  type CreateShareDto,
+} from "./dto/create-share.dto.js";
 import type {
   ShareableVendorDto,
   VendorShareDto,
@@ -18,6 +21,22 @@ import {
 
 /** The template used when a vendor's 24-hour window is shut. */
 const TEMPLATE_NAME = process.env.WHATSAPP_TEMPLATE_NAME ?? "vendor_review_request";
+
+/**
+ * Unique recipients WhatsApp accepts in a rolling 24 hours.
+ *
+ * Meta's messaging tier, not a number of our own: an unverified business gets
+ * 250, and verification moves it to 1_000, 10_000, 100_000 and then unlimited
+ * on volume and quality. Overridable because moving up a tier is something
+ * Meta does to the account, and should not need a deploy here.
+ */
+const DAILY_RECIPIENT_LIMIT = (() => {
+  const configured = Number(process.env.WHATSAPP_DAILY_RECIPIENTS ?? "");
+  return Number.isInteger(configured) && configured > 0 ? configured : 250;
+})();
+
+/** The tier's window is rolling, not a calendar day. */
+const DAILY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Language codes to try, in order.
@@ -145,12 +164,34 @@ export class SharesService {
       );
     }
 
+    // The tier is a rolling 24-hour budget of unique recipients, not a limit
+    // per send, so it can only be checked against what has already gone out.
+    const remaining = await this.remainingDailyRecipients(
+      vendors.map((vendor) => vendor.id),
+    );
+    if (vendors.length > remaining) {
+      throw new BadRequestException(
+        remaining === 0
+          ? `WhatsApp's daily limit of ${DAILY_RECIPIENT_LIMIT} recipients has been reached. Sending resumes in 24 hours.`
+          : `Only ${remaining} of WhatsApp's ${DAILY_RECIPIENT_LIMIT} daily recipients are left, and this share names ${vendors.length}.`,
+      );
+    }
+
     // Unsigned, so the link a vendor opens tomorrow still works — a signed URL
     // would expire in six hours, long before anyone has watched them.
     const links = submissions.map((submission) =>
       this.storage.publicObjectUrl(submission.objectKey),
     );
     const body = composeMessage(input.message, links);
+
+    // Measured rather than estimated: the per-video cap is derived from an
+    // average link length, and a run of unusually long object keys can still
+    // push a legal-looking share past what WhatsApp accepts.
+    if (body.length > WHATSAPP_BODY_LIMIT) {
+      throw new BadRequestException(
+        `These ${submissions.length} videos and your message come to ${body.length} characters, over WhatsApp's ${WHATSAPP_BODY_LIMIT} limit. Send fewer videos or shorten the message.`,
+      );
+    }
 
     const share = await this.prisma.client.vendorShare.create({
       data: {
@@ -188,6 +229,33 @@ export class SharesService {
       include: WITH_NAMES,
     });
     return toDto(updated);
+  }
+
+  /**
+   * How many new recipients WhatsApp will still accept in this rolling day.
+   *
+   * The tier counts *unique* recipients, so a vendor already messaged in the
+   * window is free to message again — which is why the vendors in hand are
+   * excluded from the count rather than simply subtracted from it.
+   *
+   * Counted from what we sent rather than asked of Meta: the Graph API reports
+   * the tier, not the balance, and a send refused for quota is reported per
+   * message once it is already too late to tell the admin up front.
+   */
+  private async remainingDailyRecipients(
+    vendorIds: readonly string[],
+  ): Promise<number> {
+    const since = new Date(Date.now() - DAILY_WINDOW_MS);
+    const sent = await this.prisma.client.vendorShareRecipient.findMany({
+      where: {
+        status: VendorShareStatus.SENT,
+        sentAt: { gte: since },
+        vendorId: { notIn: [...vendorIds] },
+      },
+      select: { vendorId: true },
+      distinct: ["vendorId"],
+    });
+    return Math.max(0, DAILY_RECIPIENT_LIMIT - sent.length);
   }
 
   /**

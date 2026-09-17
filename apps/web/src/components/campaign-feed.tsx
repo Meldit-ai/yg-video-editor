@@ -16,7 +16,11 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useCollection } from "@/hooks/use-collection"
 import { fileSize, relativeTime } from "@/lib/format"
-import type { Campaign, VideoSubmission } from "@/lib/types"
+import {
+  MAX_SHARE_MEDIA,
+  type Campaign,
+  type VideoSubmission,
+} from "@/lib/types"
 import { cn } from "@/lib/utils"
 
 /** The orderings the API offers, in the order they appear in the bar. */
@@ -167,11 +171,24 @@ export function CampaignFeed({ campaign }: { campaign: Campaign }) {
 
       {visibleSelected.length > 0 && (
         <div className="sticky bottom-4 z-10 flex items-center gap-3 rounded-lg border bg-background/95 px-4 py-2.5 shadow-lg backdrop-blur">
-          <CheckIcon className="size-4 text-[var(--success)]" />
+          <CheckIcon
+            className={
+              visibleSelected.length > MAX_SHARE_MEDIA
+                ? "size-4 text-destructive"
+                : "size-4 text-[var(--success)]"
+            }
+          />
           <span className="text-[13px]">
             {visibleSelected.length === 1
               ? "1 video selected"
               : `${visibleSelected.length} videos selected`}
+            {visibleSelected.length > MAX_SHARE_MEDIA && (
+              // Said while they are still choosing, rather than after the
+              // dialog is filled in: the share cannot be sent like this.
+              <span className="ml-2 text-destructive">
+                max {MAX_SHARE_MEDIA} per share
+              </span>
+            )}
           </span>
           <Button
             variant="ghost"

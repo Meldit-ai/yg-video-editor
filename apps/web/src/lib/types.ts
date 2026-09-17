@@ -353,6 +353,19 @@ export interface ShareableVendor {
   reachable: boolean
 }
 
+/**
+ * Share limits. Mirrors create-share.dto.ts — keep the two in step.
+ *
+ * Both come from WhatsApp's own ceilings rather than taste: the body it will
+ * accept is 4096 characters, which is about 24 links once the note has had its
+ * room, and the recipient cap is Meta's messaging tier for an unverified
+ * business. The server checks the tier against what has actually been sent in
+ * the last 24 hours, which the browser cannot know — so a share inside these
+ * numbers can still be refused, and the dialog reports that when it happens.
+ */
+export const MAX_SHARE_MEDIA = 24
+export const MAX_SHARE_VENDORS = 250
+
 /* ------------------------------------------------------ campaign reels */
 
 /** Mirrors apps/api/src/reels/reels.types.ts. */

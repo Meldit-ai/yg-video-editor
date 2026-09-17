@@ -23,10 +23,12 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Textarea } from "@/components/ui/textarea"
 import { errorMessage } from "@/hooks/use-collection"
 import { api } from "@/lib/api"
-import type {
-  ShareableVendor,
-  VendorShare,
-  VendorShareRecipient,
+import {
+  MAX_SHARE_MEDIA,
+  MAX_SHARE_VENDORS,
+  type ShareableVendor,
+  type VendorShare,
+  type VendorShareRecipient,
 } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
@@ -142,6 +144,12 @@ export function VendorShareDialog({
     (id) => vendors?.find((vendor) => vendor.id === id)?.reachable ?? false,
   ).length
 
+  // Checked here as well as on the server so the admin is told before writing
+  // a message, not after sending one. The server stays the authority.
+  const tooManyVideos = shared.length > MAX_SHARE_MEDIA
+  const tooManyVendors = reachableSelected > MAX_SHARE_VENDORS
+  const overLimit = tooManyVideos || tooManyVendors
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85svh] overflow-y-auto sm:max-w-lg">
@@ -228,6 +236,17 @@ export function VendorShareDialog({
           </div>
         )}
 
+        {overLimit && (
+          <p
+            role="alert"
+            className="rounded-md bg-destructive/10 px-3 py-2 text-[13px] text-destructive"
+          >
+            {tooManyVideos
+              ? `${shared.length} videos selected — share at most ${MAX_SHARE_MEDIA} at a time.`
+              : `${reachableSelected} vendors selected — send to at most ${MAX_SHARE_VENDORS} at a time.`}
+          </p>
+        )}
+
         <DialogFooter>
           {result === null ? (
             <>
@@ -246,7 +265,8 @@ export function VendorShareDialog({
                   isSending ||
                   shared.length === 0 ||
                   reachableSelected === 0 ||
-                  message.trim().length === 0
+                  message.trim().length === 0 ||
+                  overLimit
                 }
               >
                 {isSending ? (

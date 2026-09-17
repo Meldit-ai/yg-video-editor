@@ -112,6 +112,38 @@ describe("WhatsAppClient", () => {
     );
   });
 
+  it("names the fix for an expired token instead of repeating Meta's wording", async () => {
+    // The temporary tokens Meta hands out last under 24h, so this is the
+    // failure the integration hits most often, and "OAuthException" reads
+    // like a bug in the send path rather than a credential that ran out.
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(
+        {
+          error: {
+            message: "Error validating access token: Session has expired",
+            code: 190,
+            type: "OAuthException",
+          },
+        },
+        401,
+      ),
+    );
+
+    await expect(client.sendText("919999999999", "hi")).rejects.toThrow(
+      /System User token/,
+    );
+  });
+
+  it("never retries an expired token, however many attempts are left", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ error: { message: "Session has expired", code: 190 } }, 401),
+    );
+
+    await expect(client.sendText("919999999999", "hi")).rejects.toMatchObject({
+      retryable: false,
+    });
+  });
+
   it("treats a network failure as retryable", async () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("socket hang up"));
 

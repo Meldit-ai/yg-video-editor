@@ -37,15 +37,33 @@ const MIN_VIDEOS = 2;
 /**
  * URLs the engine accepts in one `POST /v1/compare`.
  *
- * A hard cap on its side — 5 URLs is answered with HTTP 422, not a truncated
- * job — so any campaign past this is covered by several overlapping calls.
- * Overridable because it is the engine's limit, not ours, and raising it
- * there should not need a deploy here.
+ * A hard cap on its side — past it the request is answered with HTTP 422, not
+ * a truncated job — so any campaign larger than this is covered by several
+ * overlapping calls. Overridable because it is the engine's limit, not ours,
+ * and raising it there should not need a deploy here.
  */
 function maxUrlsPerJob(): number {
   const configured = Number(process.env.COMPARISON_ENGINE_MAX_URLS ?? "");
-  return Number.isInteger(configured) && configured >= 2 ? configured : 4;
+  const requested =
+    Number.isInteger(configured) && configured >= 2 ? configured : 4;
+  return Math.min(requested, SAFE_URLS_PER_JOB);
 }
+
+/**
+ * The most URLs worth putting in one job, whatever the engine would accept.
+ *
+ * A job's cost is its *pair* count, which is quadratic in the URLs, and every
+ * pair shares one job timeout. Ten URLs is 45 pairs against the engine's
+ * default 420s budget — about 9s a pair, while aligning a single pair is
+ * allowed up to 90s on its own, so one slow pair starves the rest and the
+ * whole batch times out with none of its pairs scored. Six URLs is 15 pairs,
+ * which leaves room for the worst case rather than the average one.
+ *
+ * Capped here rather than left to configuration because it is a property of
+ * how the engine spends a job budget, not a deployment choice: a larger value
+ * does not run slower, it silently loses pairs.
+ */
+const SAFE_URLS_PER_JOB = 6;
 
 /** Poll fast while the job is young, then back off — see `pollInterval`. */
 const FAST_POLL_MS = 3_000;
@@ -69,14 +87,27 @@ const MAX_WAIT_MS = 30 * 60 * 1000;
 const MAX_POLL_FAILURES = 8;
 
 /**
- * How many times one batch waits for room in the engine's queue.
+ * Batches handed to the engine at once.
  *
- * The queue drains as jobs finish, and a job is minutes rather than seconds,
- * so these are long waits by design — the alternative is dropping the batch
- * and leaving its pairs uncompared.
+ * Its queue is bounded and it answers 503 once full, so this stays under that
+ * and the rest is fed in as jobs finish. Deliberately short of the queue's
+ * depth: another campaign may be checking at the same time, and filling the
+ * queue alone would refuse it.
  */
-const SUBMIT_ATTEMPTS = 60;
-const SUBMIT_BACKOFF_MS = 5_000;
+const SUBMIT_WAVE = 12;
+
+/**
+ * How often the drain loop looks for room to submit the next batch.
+ *
+ * One batch per pass, so this also paces the whole run: a campaign splitting
+ * into a hundred batches spends a hundred intervals just handing them over.
+ * Short enough that the pacing is not the bottleneck, long enough that a busy
+ * engine is not asked on a tight loop.
+ */
+const DRAIN_INTERVAL_MS = 1_000;
+
+/** Bounds the drain loop so a wedged engine cannot leave it running forever. */
+const DRAIN_MAX_MS = 4 * 60 * 60 * 1000;
 
 /** The row shape every read selects: the roster and pairs come along. */
 const WITH_DETAIL = {
@@ -175,6 +206,16 @@ export class ComparisonsService
     { comparisonId: string; campaignId: string; controller: AbortController }
   >();
 
+  /**
+   * Drain loops in flight, by run id — one per run, feeding its batches to the
+   * engine as room appears. Kept beside the campaign so superseding a campaign
+   * stops its loop as well as its pollers.
+   */
+  private readonly drains = new Map<
+    string,
+    { campaignId: string; controller: AbortController }
+  >();
+
   /** Set on shutdown so a poll that is mid-await does not restart itself. */
   private stopped = false;
 
@@ -224,6 +265,28 @@ export class ComparisonsService
           `Resumed polling ${running.length} in-flight comparison call(s)`,
         );
       }
+
+      // Batches that had not reached the engine when the process stopped. They
+      // are ordinary queued rows with no job id, so restarting their run's
+      // drain loop picks up exactly where it left off.
+      const waiting = await this.prisma.client.videoComparison.findMany({
+        where: {
+          active: true,
+          status: { in: LIVE_STATUSES },
+          jobs: { some: { jobId: null, status: ComparisonStatus.QUEUED } },
+        },
+        select: { id: true, campaignId: true },
+      });
+
+      for (const run of waiting) {
+        this.startDrain(run.id, run.campaignId);
+      }
+
+      if (waiting.length > 0) {
+        this.logger.log(
+          `Resumed ${waiting.length} comparison run(s) with batches still waiting for the engine`,
+        );
+      }
     } catch (caught) {
       this.logger.warn(
         `Could not resume in-flight comparison runs: ${messageOf(caught)}`,
@@ -236,6 +299,8 @@ export class ComparisonsService
     this.stopped = true;
     for (const { controller } of this.polls.values()) controller.abort();
     this.polls.clear();
+    for (const { controller } of this.drains.values()) controller.abort();
+    this.drains.clear();
   }
 
   /**
@@ -319,31 +384,29 @@ export class ComparisonsService
     const accepted: { jobId: string; submissionIds: string[] }[] = [];
     const rejected: string[] = [];
 
-    for (const batch of batches) {
+    // Only a first wave goes in now. The engine queues a bounded number of
+    // jobs and refuses the rest with 503, and a campaign of any size has far
+    // more batches than that — so firing them all makes the engine reject most
+    // of them and leaves their pairs uncompared. The remainder is recorded as
+    // pending and fed in by `drainQueue` as each running job finishes.
+    const firstWave = batches.slice(0, SUBMIT_WAVE);
+    const pending = batches.slice(SUBMIT_WAVE);
+
+    for (const batch of firstWave) {
       const urls = batch.map((id) => urlBySubmission.get(id) ?? "");
-      let lastError = "";
-
-      // The engine queues a bounded number of jobs and answers 503 once it is
-      // full. A campaign of any size submits far more batches than that fits,
-      // so a refusal is "come back shortly", not a failure — dropping the
-      // batch would silently leave those pairs uncompared.
-      for (let attempt = 0; attempt < SUBMIT_ATTEMPTS; attempt += 1) {
-        try {
-          const jobId = await this.engine.submit(urls);
-          accepted.push({ jobId, submissionIds: batch });
-          lastError = "";
-          break;
-        } catch (caught) {
-          lastError = messageOf(caught);
-          if (!isEngineBusy(lastError)) break;
-          await sleep(SUBMIT_BACKOFF_MS);
-        }
+      try {
+        const jobId = await this.engine.submit(urls);
+        accepted.push({ jobId, submissionIds: batch });
+      } catch (caught) {
+        const message = messageOf(caught);
+        // A full queue is "come back shortly", not a failure: the batch goes
+        // back on the pending pile rather than being reported as broken.
+        if (isEngineBusy(message)) pending.push(batch);
+        else rejected.push(message);
       }
-
-      if (lastError !== "") rejected.push(lastError);
     }
 
-    if (accepted.length === 0) {
+    if (accepted.length === 0 && pending.length === 0) {
       return this.recordUnstartedRun(
         campaignId,
         triggerSubmissionId,
@@ -378,14 +441,23 @@ export class ComparisonsService
           // sum over batches — batches overlap, and a pair counted twice
           // would make the bar stall short of full.
           pairsTotal: pairCount(entries.length),
-          // Partial from the start when some calls were refused: the run can
-          // never cover every pair, and saying so late would be worse.
+          // Only calls the engine refused outright are an error. A batch still
+          // waiting for room is not: it is queued work, and reporting it as a
+          // failure would mark a healthy run partial for its whole lifetime.
           errorMessage:
             rejected.length > 0
               ? `${rejected.length} of ${batches.length} engine requests were refused: ${rejected[0]}`
               : null,
           entries: { create: entries },
-          jobs: { create: accepted },
+          // Pending batches are rows too, with no job id yet. The column is
+          // already nullable, and storing them means a restart resumes them
+          // instead of silently dropping most of a large campaign's work.
+          jobs: {
+            create: [
+              ...accepted,
+              ...pending.map((submissionIds) => ({ submissionIds })),
+            ],
+          },
         },
         include: { jobs: true },
       });
@@ -396,7 +468,164 @@ export class ComparisonsService
       if (job.jobId === null) continue;
       this.track(job.id, row.id, campaignId, job.jobId);
     }
+    if (row.jobs.some((job) => job.jobId === null)) {
+      this.startDrain(row.id, campaignId);
+    }
     return this.toSummary(row);
+  }
+
+  /**
+   * Feeds a run's pending batches to the engine as it frees up.
+   *
+   * One loop per run, not one per batch: the engine's queue is a shared
+   * resource, and several loops racing for the same slots would refill it
+   * faster than they drained it. Submitting one batch per pass keeps room for
+   * other campaigns rather than seizing every slot that opens.
+   */
+  private startDrain(comparisonId: string, campaignId: string): void {
+    if (this.stopped || this.drains.has(comparisonId)) return;
+
+    const controller = new AbortController();
+    this.drains.set(comparisonId, { campaignId, controller });
+
+    void this.drainQueue(comparisonId, campaignId, controller.signal)
+      .catch((caught: unknown) => {
+        this.logger.error(
+          `Draining comparison ${comparisonId} stopped unexpectedly: ${messageOf(caught)}`,
+        );
+      })
+      .finally(() => {
+        this.drains.delete(comparisonId);
+      });
+  }
+
+  private async drainQueue(
+    comparisonId: string,
+    campaignId: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const startedAt = Date.now();
+
+    while (!signal.aborted && !this.stopped) {
+      try {
+        await sleep(DRAIN_INTERVAL_MS, undefined, { signal });
+      } catch {
+        return; // Superseded, or the app is shutting down.
+      }
+
+      // Re-read every pass rather than holding the list in memory: the run may
+      // have been superseded by a newer upload, and its pending batches must
+      // then stop being submitted.
+      const run = await this.prisma.client.videoComparison.findFirst({
+        where: {
+          id: comparisonId,
+          active: true,
+          status: { in: LIVE_STATUSES },
+        },
+        select: { id: true },
+      });
+      if (run === null) return;
+
+      const next = await this.prisma.client.videoComparisonJob.findFirst({
+        where: {
+          comparisonId,
+          jobId: null,
+          status: ComparisonStatus.QUEUED,
+        },
+        select: { id: true, submissionIds: true },
+        orderBy: { createdAt: "asc" },
+      });
+      if (next === null) return; // Everything has been handed over.
+
+      if (Date.now() - startedAt > DRAIN_MAX_MS) {
+        await this.abandonPending(
+          comparisonId,
+          "The comparison engine did not free up in time.",
+        );
+        return;
+      }
+
+      const urls = await this.urlsFor(next.submissionIds);
+      if (urls === null) {
+        await this.failPendingJob(next.id, "A video in this batch is missing.");
+        continue;
+      }
+
+      try {
+        const jobId = await this.engine.submit(urls);
+        await this.prisma.client.videoComparisonJob.update({
+          where: { id: next.id },
+          data: { jobId },
+        });
+        this.track(next.id, comparisonId, campaignId, jobId);
+      } catch (caught) {
+        const message = messageOf(caught);
+        // Still full. Left pending and retried on the next pass — this is the
+        // normal case for all but the last few batches of a large campaign.
+        if (isEngineBusy(message)) continue;
+        await this.failPendingJob(next.id, message);
+      }
+    }
+  }
+
+  /** Engine URLs for a batch, or null if a submission has gone away. */
+  private async urlsFor(submissionIds: string[]): Promise<string[] | null> {
+    const rows = await this.prisma.client.videoSubmission.findMany({
+      where: { id: { in: submissionIds }, active: true },
+      select: { id: true, objectKey: true },
+    });
+    if (rows.length !== submissionIds.length) return null;
+
+    const keyById = new Map(rows.map((row) => [row.id, row.objectKey]));
+    try {
+      return submissionIds.map((id) =>
+        this.storage.publicObjectUrl(keyById.get(id) ?? ""),
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  /** Marks one never-submitted batch failed, closing the run if it was last. */
+  private async failPendingJob(
+    jobRowId: string,
+    errorMessage: string,
+  ): Promise<void> {
+    const job = await this.prisma.client.videoComparisonJob.update({
+      where: { id: jobRowId },
+      data: {
+        status: ComparisonStatus.FAILED,
+        errorMessage,
+        completedAt: new Date(),
+      },
+      select: { comparisonId: true },
+    });
+    await this.prisma.client.$transaction(async (tx) => {
+      await closeRunIfDone(tx, job.comparisonId, null, this.logger);
+    });
+  }
+
+  /** Gives up on every batch still waiting for room. */
+  private async abandonPending(
+    comparisonId: string,
+    errorMessage: string,
+  ): Promise<void> {
+    const abandoned = await this.prisma.client.videoComparisonJob.updateMany({
+      where: { comparisonId, jobId: null, status: ComparisonStatus.QUEUED },
+      data: {
+        status: ComparisonStatus.FAILED,
+        errorMessage,
+        completedAt: new Date(),
+      },
+    });
+    if (abandoned.count === 0) return;
+
+    this.logger.warn(
+      `Gave up on ${abandoned.count} batch(es) of comparison ${comparisonId}: ${errorMessage}`,
+    );
+    await this.prisma.client.$transaction(async (tx) => {
+      await closeRunIfDone(tx, comparisonId, null, this.logger);
+    });
   }
 
   /** Runs on a campaign, newest first. Summaries only — no pairs. */
@@ -500,7 +729,12 @@ export class ComparisonsService
       });
   }
 
-  /** Aborts every poll on a campaign except the run that replaced them. */
+  /**
+   * Aborts every poll and drain on a campaign except the run that replaced
+   * them. A superseded run must stop submitting as well as stop reading:
+   * without this its pending batches would keep taking the engine's slots from
+   * the run that replaced it.
+   */
   private stopPollsForCampaign(campaignId: string, keepId: string): void {
     for (const [id, poll] of this.polls) {
       if (poll.comparisonId === keepId || poll.campaignId !== campaignId) {
@@ -508,6 +742,11 @@ export class ComparisonsService
       }
       poll.controller.abort();
       this.polls.delete(id);
+    }
+    for (const [id, drain] of this.drains) {
+      if (id === keepId || drain.campaignId !== campaignId) continue;
+      drain.controller.abort();
+      this.drains.delete(id);
     }
   }
 

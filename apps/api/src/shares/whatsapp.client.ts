@@ -49,6 +49,13 @@ export class WhatsAppError extends Error {
  * template, a revoked token — fails the same way however many times it is
  * tried, and retrying only delays telling the admin.
  */
+/**
+ * Meta's OAuth failure: the token is expired, revoked, or for another app.
+ * Deliberately absent from RETRYABLE_CODES — no number of attempts fixes a
+ * credential, and retrying only delays the real report.
+ */
+const OAUTH_ERROR = 190;
+
 const RETRYABLE_CODES = new Set([
   130429, // throughput reached
   131048, // spam rate limit
@@ -205,9 +212,22 @@ function readError(payload: unknown): { message: string; code: number | null } {
   // often just the code's title.
   const details = typeof data?.details === "string" ? data.details : null;
   const text = typeof message === "string" ? message : "WhatsApp send failed";
+  const numericCode = typeof code === "number" ? code : null;
+
+  // An expired or revoked token is the one failure with a single known fix,
+  // and Meta reports it as a bare OAuth error that reads like a code problem.
+  // Say what to do about it instead, or the next person spends the afternoon
+  // looking for a bug in the send path.
+  if (numericCode === OAUTH_ERROR) {
+    return {
+      message: `${text} — the WhatsApp access token is expired or revoked. Replace WHATSAPP_ACCESS_TOKEN with a System User token (Business Settings > Users > System Users), which does not expire.`,
+      code: numericCode,
+    };
+  }
+
   return {
     message: details === null ? text : `${text}: ${details}`,
-    code: typeof code === "number" ? code : null,
+    code: numericCode,
   };
 }
 

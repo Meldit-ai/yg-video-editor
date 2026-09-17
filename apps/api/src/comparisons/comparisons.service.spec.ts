@@ -626,6 +626,127 @@ describe("ComparisonsService.runForCampaign", () => {
     error.mockRestore();
   });
 
+  /**
+   * Ten videos plan into C(5,2) = 10 batches at the default cap, which is more
+   * than one wave. This is the shape that used to break: every batch was fired
+   * at an engine whose queue holds ten, most came back 503, and their pairs
+   * were never compared — leaving every video on the campaign unscored.
+   */
+  function tenVideos() {
+    // Enough videos to plan into more batches than one wave carries, so the
+    // held-back pile is exercised rather than trivially empty.
+    return Array.from({ length: 30 }, (_, index) => ({
+      id: `sub_${index}`,
+      objectKey: `campaigns/cmp_1/${index}.mp4`,
+    }));
+  }
+
+  it("never puts more than the safe number of URLs in one job", async () => {
+    // The environment can ask for more than a job budget can actually score.
+    // A job's cost is quadratic in its URLs, so an over-large batch does not
+    // run slower — it times out and loses every pair in it.
+    const previous = process.env.COMPARISON_ENGINE_MAX_URLS;
+    process.env.COMPARISON_ENGINE_MAX_URLS = "10";
+    submissionDelegate.findMany.mockResolvedValue(tenVideos());
+    engineMock.submit.mockResolvedValue("job_1");
+
+    try {
+      await service.runForCampaign("cmp_1");
+
+      const sizes = engineMock.submit.mock.calls.map(
+        (call) => (call[0] as string[]).length,
+      );
+      expect(sizes.length).toBeGreaterThan(0);
+      for (const size of sizes) expect(size).toBeLessThanOrEqual(6);
+    } finally {
+      if (previous === undefined) delete process.env.COMPARISON_ENGINE_MAX_URLS;
+      else process.env.COMPARISON_ENGINE_MAX_URLS = previous;
+    }
+  });
+
+  it("hands the engine one wave and holds the rest back", async () => {
+    submissionDelegate.findMany.mockResolvedValue(tenVideos());
+    engineMock.submit.mockResolvedValue("job_1");
+
+    await service.runForCampaign("cmp_1");
+
+    // Not all ten: the engine's queue is bounded, and filling it is what made
+    // it refuse the remainder in the first place.
+    expect(engineMock.submit).toHaveBeenCalledTimes(12);
+
+    const jobs = (
+      comparisonDelegate.create.mock.calls[0]?.[0] as {
+        data: { jobs: { create: { jobId?: string }[] } };
+      }
+    ).data.jobs.create;
+
+    // All ten batches are still recorded. The four with no job id are the
+    // pending pile — a restart resumes them instead of losing them.
+    expect(jobs.length).toBeGreaterThan(12);
+    expect(jobs.filter((job) => job.jobId !== undefined)).toHaveLength(12);
+    expect(jobs.filter((job) => job.jobId === undefined)).toHaveLength(
+      jobs.length - 12,
+    );
+  });
+
+  it("does not report held-back batches as an error", async () => {
+    submissionDelegate.findMany.mockResolvedValue(tenVideos());
+    engineMock.submit.mockResolvedValue("job_1");
+
+    await service.runForCampaign("cmp_1");
+
+    // Waiting for room is queued work, not a failure. Saying otherwise would
+    // mark a perfectly healthy run partial for its whole lifetime.
+    expect(comparisonDelegate.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ errorMessage: null }),
+      }),
+    );
+  });
+
+  it("keeps a batch the engine was too busy for, rather than dropping it", async () => {
+    submissionDelegate.findMany.mockResolvedValue([
+      { id: "sub_a", objectKey: "campaigns/cmp_1/a.mp4" },
+      { id: "sub_b", objectKey: "campaigns/cmp_1/b.mp4" },
+    ]);
+    engineMock.submit.mockRejectedValue(
+      new Error("engine_busy: the queue is full"),
+    );
+
+    await service.runForCampaign("cmp_1");
+
+    // A full queue is "come back shortly". The run is still created, with the
+    // batch pending, where the old code recorded a failure and gave up.
+    expect(comparisonDelegate.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: ComparisonStatus.QUEUED,
+          errorMessage: null,
+          jobs: { create: [{ submissionIds: ["sub_a", "sub_b"] }] },
+        }),
+      }),
+    );
+  });
+
+  it("still fails a run the engine refused for a real reason", async () => {
+    const error = vi
+      .spyOn(Logger.prototype, "error")
+      .mockImplementation(() => {});
+    submissionDelegate.findMany.mockResolvedValue([
+      { id: "sub_a", objectKey: "campaigns/cmp_1/a.mp4" },
+      { id: "sub_b", objectKey: "campaigns/cmp_1/b.mp4" },
+    ]);
+    engineMock.submit.mockRejectedValue(new Error("422 unprocessable entity"));
+    comparisonDelegate.create.mockResolvedValue(
+      comparisonRow({ status: ComparisonStatus.FAILED }),
+    );
+
+    // The busy path must not swallow genuine faults along with it.
+    const run = await service.runForCampaign("cmp_1");
+    expect(run.status).toBe(ComparisonStatus.FAILED);
+    error.mockRestore();
+  });
+
   it("never lets a comparison failure surface on the upload path", async () => {
     const warn = vi.spyOn(Logger.prototype, "warn").mockImplementation(() => {});
     submissionDelegate.findMany.mockRejectedValue(new Error("database is down"));
