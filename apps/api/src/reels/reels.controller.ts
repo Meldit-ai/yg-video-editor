@@ -3,8 +3,13 @@ import { Role } from "@repo/database";
 import { Roles } from "../auth/decorators/roles.decorator.js";
 import { CampaignAccessGuard } from "../campaigns/guards/campaign-access.guard.js";
 import { ImportReelsDto } from "./dto/import-reels.dto.js";
+import { ReelCheckService } from "./reel-check.service.js";
 import { ReelsService } from "./reels.service.js";
-import type { CampaignReelDto, ReelImportResultDto } from "./reels.types.js";
+import type {
+  CampaignReelDto,
+  ReelCheckRunDto,
+  ReelImportResultDto,
+} from "./reels.types.js";
 
 /**
  * A campaign's Instagram reels, pulled from the external tracker.
@@ -16,7 +21,10 @@ import type { CampaignReelDto, ReelImportResultDto } from "./reels.types.js";
 @UseGuards(CampaignAccessGuard)
 @Roles(Role.ADMIN)
 export class ReelsController {
-  constructor(private readonly reels: ReelsService) {}
+  constructor(
+    private readonly reels: ReelsService,
+    private readonly check: ReelCheckService,
+  ) {}
 
   /** GET /api/campaigns/:campaignId/reels — stored reels, most original first. */
   @Get()
@@ -36,5 +44,29 @@ export class ReelsController {
     @Body() body: ImportReelsDto,
   ): Promise<ReelImportResultDto> {
     return this.reels.importFromTracker(campaignId, body.limit);
+  }
+
+  /**
+   * GET .../reels/check — the most recent check, or null if none has run.
+   *
+   * Declared before any parameter route: Nest matches in declaration order,
+   * and ":id" would otherwise swallow "check".
+   */
+  @Get("check")
+  findLatestCheck(
+    @Param("campaignId") campaignId: string,
+  ): Promise<ReelCheckRunDto | null> {
+    return this.check.findLatest(campaignId);
+  }
+
+  /**
+   * POST .../reels/check — compare every reel against the ones posted before it.
+   *
+   * Runs to completion rather than returning a job id: the engine caches
+   * fingerprints, so only the first check on a campaign is slow.
+   */
+  @Post("check")
+  runCheck(@Param("campaignId") campaignId: string): Promise<ReelCheckRunDto> {
+    return this.check.run(campaignId);
   }
 }
