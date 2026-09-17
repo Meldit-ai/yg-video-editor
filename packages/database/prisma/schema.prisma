@@ -85,6 +85,10 @@ model Campaign {
   /// Vendor shares sent from this campaign's feed.
   vendorShares VendorShare[]
 
+  /// Instagram reels pulled from the tracker, and the runs matching against them.
+  reels     CampaignReel[]
+  reelMatchRuns ReelMatchRun[]
+
   @@index([active])
   @@index([status])
   @@index([trackerCampaignId])
@@ -150,6 +154,8 @@ model VideoSubmission {
   /// twice; which side a video lands on carries no meaning, so read both.
   comparisonPairsA VideoComparisonPair[] @relation("ComparisonPairA")
   comparisonPairsB VideoComparisonPair[] @relation("ComparisonPairB")
+  /// Reel matches this video is one side of.
+  reelMatchPairs   ReelMatchPair[]
 
   @@index([campaignId, active])
   @@index([editorId])
@@ -457,4 +463,159 @@ model VendorShareRecipient {
   @@index([vendorId])
   /// The queue read: anything still owed a send, oldest first.
   @@index([status, createdAt])
+}
+
+/// One Instagram reel pulled from the external tracker for a campaign.
+///
+/// A creator's published post, NOT an editor's hand-in — the two never share a
+/// table. A submission is a file in our own bucket; a reel is someone else's
+/// media at a URL we only reference.
+model CampaignReel {
+  id String @id @default(cuid())
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id])
+
+  /// The tracker's own id, so a re-ingest updates in place.
+  trackerPostId String
+
+  /// The creator. `socialUsername` is verbatim from the tracker and is a URL
+  /// ("https://instagram.com/cric_bold"); `username` is the handle parsed out
+  /// of it, lowercased — that is what reads as the profile.
+  socialUsername String
+  username       String
+
+  /// The post's permalink, and the direct media URL the engine fingerprints.
+  ///
+  /// `mediaUrl` is stored EXACTLY as the tracker gave it: the engine derives a
+  /// video's cache identity from the URL, so normalising it here would orphan
+  /// every fingerprint already stored against the old form.
+  permalink String?
+  mediaUrl  String
+
+  /// When it went live on Instagram. Null when upstream sent nothing usable.
+  /// Half of the evidence a human needs to tell who posted first.
+  postedAt DateTime?
+
+  /// Engagement blob, verbatim. Display only, so JSON rather than columns.
+  postCounts Json?
+
+  caption         String?
+  invoiceApproved Boolean @default(false)
+
+  /// Soft-delete flag — see User.active. Set false when a post leaves the
+  /// tracker feed, so past findings stay readable.
+  active Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  matchPairs ReelMatchPair[]
+
+  @@unique([campaignId, trackerPostId])
+  @@index([campaignId, active])
+  @@index([campaignId, username])
+}
+
+/// One "find matches" run over a campaign.
+model ReelMatchRun {
+  id String @id @default(cuid())
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id])
+
+  status ComparisonStatus @default(QUEUED)
+
+  /// The score at or above which a pair counted as the same video, snapshotted
+  /// so a later change cannot rewrite what this run concluded.
+  threshold Float
+
+  /// Denormalised once the run lands, so a history row renders without
+  /// loading a pair.
+  reelCount       Int @default(0)
+  submissionCount Int @default(0)
+  pairsDone       Int @default(0)
+  pairsTotal      Int @default(0)
+  matchCount      Int @default(0)
+
+  errorMessage String?
+  completedAt  DateTime?
+
+  active Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  jobs  ReelMatchJob[]
+  pairs ReelMatchPair[]
+
+  @@index([campaignId, active, createdAt])
+  @@index([status])
+}
+
+/// One engine call inside a run.
+///
+/// A call carries one submission pinned alongside a slice of the campaign's
+/// reels, so every needed pair is covered exactly once — unlike the submission
+/// comparison, which is quadratic and needs overlapping batches.
+model ReelMatchJob {
+  id String @id @default(cuid())
+
+  runId String
+  run   ReelMatchRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  /// The engine's own job id, polled until terminal. Null when the request was
+  /// rejected outright — there is no job behind such a row.
+  jobId String?
+
+  status ComparisonStatus @default(QUEUED)
+
+  /// The submission this call pins, and the reels it was compared against.
+  submissionId String
+  reelIds      String[]
+
+  errorMessage String?
+  completedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([runId])
+  @@index([jobId])
+}
+
+/// One editor video compared with one reel.
+///
+/// Only pairs worth looking at are stored: a campaign's full cross product is
+/// mostly unrelated videos scoring 1.0, and keeping those would make this the
+/// largest table in the database for no reader.
+model ReelMatchPair {
+  id String @id @default(cuid())
+
+  runId String
+  run   ReelMatchRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  submissionId String
+  submission   VideoSubmission @relation(fields: [submissionId], references: [id])
+
+  reelId String
+  reel   CampaignReel @relation(fields: [reelId], references: [id])
+
+  /// 0-100, floored at 1.0 by the engine.
+  score   Float
+  verdict ComparisonVerdict
+
+  /// Whether `score` met the run's threshold — i.e. the same video.
+  matched Boolean @default(false)
+
+  /// The engine's evidence block, so a borderline call is auditable rather
+  /// than a bare yes/no.
+  evidence Json?
+
+  createdAt DateTime @default(now())
+
+  @@unique([runId, submissionId, reelId])
+  @@index([runId, matched, score])
+  @@index([submissionId])
+  @@index([reelId])
 }
