@@ -16,9 +16,45 @@ export interface TrackerCampaign {
   name: string;
 }
 
+/**
+ * One Instagram reel from a tracker campaign.
+ *
+ * Only reels carry exactly one video, which is what makes them matchable; a
+ * carousel post has several and a story has none. `postedAt` is half the
+ * evidence for reading who published first, so it is carried through even when
+ * upstream leaves it null.
+ */
+export interface TrackerReel {
+  trackerPostId: string;
+  /** Verbatim from upstream — a profile URL, not a bare handle. */
+  socialUsername: string;
+  /** The handle parsed out of it, lowercased. */
+  username: string;
+  permalink: string | null;
+  /** The direct .mp4. Never normalised: the engine caches on this string. */
+  mediaUrl: string;
+  postedAt: Date | null;
+  postCounts: unknown;
+  caption: string | null;
+  invoiceApproved: boolean;
+}
+
 /** Upstream feed of currently-active tracker campaigns. No auth today. */
 const TRACKER_LIST_URL =
   "https://api-tracker.meldit.ai/api/v1/campaign/active/list-id-name";
+
+/** Upstream posts for one campaign. */
+const TRACKER_POSTS_URL =
+  "https://api-tracker.meldit.ai/api/v1/campaign/dashboard/posts";
+
+/** Upstream's own label for a single-video Instagram post. */
+const REEL_POST_TYPE = "instareel";
+
+/** Pulled per request, so one page has to cover a campaign. */
+const POSTS_PAGE_SIZE = 200;
+
+/** Posts are a bigger payload than the picker list, and are fetched rarely. */
+const POSTS_TIMEOUT_MS = 25_000;
 
 /** How long a fetched list stays fresh. The feed changes a few times a day. */
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -72,6 +108,49 @@ export class TrackerService {
   async resolveName(id: string): Promise<string | null> {
     const campaigns = await this.listCampaigns();
     return campaigns.find((campaign) => campaign.id === id)?.name ?? null;
+  }
+
+  /**
+   * Every matchable reel on a tracker campaign.
+   *
+   * Deliberately NOT cached, unlike the campaign picker above. That list
+   * tolerates staleness because it only fills a dropdown; an ingest is asking
+   * "what is on this campaign right now" and would rather fail loudly and be
+   * retried than quietly match against an hour-old feed.
+   */
+  async listReels(trackerCampaignId: string): Promise<TrackerReel[]> {
+    const url =
+      `${TRACKER_POSTS_URL}/${encodeURIComponent(trackerCampaignId)}` +
+      `?skip=0&orderBy=desc&orderByProp=createdAt&limit=${POSTS_PAGE_SIZE}` +
+      `&search=&field=&page=1`;
+
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: { accept: "application/json", "content-type": "application/json" },
+        body: "{}",
+        signal: AbortSignal.timeout(POSTS_TIMEOUT_MS),
+      });
+    } catch (caught) {
+      const reason = caught instanceof Error ? caught.message : String(caught);
+      throw new ServiceUnavailableException(
+        `The campaign tracker did not answer: ${reason}`,
+      );
+    }
+
+    if (!response.ok) {
+      throw new ServiceUnavailableException(
+        `The campaign tracker responded with HTTP ${response.status}`,
+      );
+    }
+
+    const payload: unknown = await response.json();
+    const reels = parseTrackerReels(payload);
+    this.logger.log(
+      `Tracker campaign ${trackerCampaignId}: ${reels.length} matchable reel(s)`,
+    );
+    return reels;
   }
 
   /**
@@ -174,4 +253,96 @@ function parseTrackerCampaigns(payload: unknown): TrackerCampaign[] {
   }
 
   return campaigns;
+}
+
+/**
+ * Maps the upstream posts payload onto TrackerReel[].
+ *
+ * Same discipline as parseTrackerCampaigns: a response that is not the shape
+ * we expect throws, while an individual record that cannot produce a usable
+ * reel is dropped rather than poisoning the page. Upstream is a third party
+ * and its records vary — some posts carry no media, some carry several.
+ */
+function parseTrackerReels(payload: unknown): TrackerReel[] {
+  if (typeof payload !== "object" || payload === null) {
+    throw new Error("tracker response was not a JSON object");
+  }
+  const { data } = payload as { data?: { records?: unknown } };
+  const records = data?.records;
+  if (!Array.isArray(records)) {
+    throw new Error("tracker response had no `data.records` array");
+  }
+
+  const reels: TrackerReel[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of records) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const row = entry as Record<string, unknown>;
+
+    // Reels only: they are the single-video posts, so one reel maps to exactly
+    // one thing to fingerprint. A carousel has several and a story has none.
+    if (row.post_type !== REEL_POST_TYPE) continue;
+
+    const trackerPostId = typeof row.id === "string" ? row.id : null;
+    if (trackerPostId === null || seen.has(trackerPostId)) continue;
+
+    const mediaUrl = firstVideoUrl(row.media_urls);
+    if (mediaUrl === null) continue;
+
+    const socialUsername =
+      typeof row.social_username === "string" ? row.social_username.trim() : "";
+    const username = handleFrom(socialUsername);
+    if (username === null) continue;
+
+    seen.add(trackerPostId);
+    reels.push({
+      trackerPostId,
+      socialUsername,
+      username,
+      permalink: typeof row.message === "string" ? row.message : null,
+      mediaUrl,
+      postedAt: parseDate(row.postDate),
+      postCounts: row.post_counts ?? null,
+      caption: typeof row.caption === "string" ? row.caption : null,
+      invoiceApproved: row.invoice_approved === true,
+    });
+  }
+
+  return reels;
+}
+
+/** The first playable video in a post's media list, if it has one. */
+function firstVideoUrl(mediaUrls: unknown): string | null {
+  if (!Array.isArray(mediaUrls)) return null;
+  for (const url of mediaUrls) {
+    if (typeof url !== "string") continue;
+    const lower = url.toLowerCase();
+    if (lower.endsWith(".mp4") || lower.endsWith(".mov")) return url;
+  }
+  return null;
+}
+
+/**
+ * The handle from a profile URL.
+ *
+ * Upstream sends "https://instagram.com/cric_bold", but tolerate a bare handle
+ * and a leading "@" too — it is a third party, and one of the three forms will
+ * turn up eventually. Lowercased, because the handle is the grouping key and
+ * Instagram treats it case-insensitively.
+ */
+export function handleFrom(socialUsername: string): string | null {
+  const trimmed = socialUsername.trim().replace(/\/+$/, "");
+  if (trimmed.length === 0) return null;
+
+  const afterSlash = trimmed.slice(trimmed.lastIndexOf("/") + 1);
+  const handle = afterSlash.replace(/^@/, "").split("?")[0] ?? "";
+  return handle.length === 0 ? null : handle.toLowerCase();
+}
+
+/** An upstream date, or null when it sent nothing usable. */
+function parseDate(value: unknown): Date | null {
+  if (typeof value !== "string") return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
