@@ -2,7 +2,9 @@ import { Body, Controller, Get, Param, Post, UseGuards } from "@nestjs/common";
 import { Role } from "@repo/database";
 import { Roles } from "../auth/decorators/roles.decorator.js";
 import { CampaignAccessGuard } from "../campaigns/guards/campaign-access.guard.js";
+import { AdoptReelsDto } from "./dto/adopt-reels.dto.js";
 import { ImportReelsDto } from "./dto/import-reels.dto.js";
+import { ReelAdoptService, type AdoptResultDto } from "./reel-adopt.service.js";
 import { ReelCheckService } from "./reel-check.service.js";
 import { ReelsService } from "./reels.service.js";
 import type {
@@ -24,6 +26,7 @@ export class ReelsController {
   constructor(
     private readonly reels: ReelsService,
     private readonly check: ReelCheckService,
+    private readonly adopt: ReelAdoptService,
   ) {}
 
   /** GET /api/campaigns/:campaignId/reels — stored reels, most original first. */
@@ -69,5 +72,21 @@ export class ReelsController {
   @Post("check")
   runCheck(@Param("campaignId") campaignId: string): Promise<ReelCheckRunDto> {
     return this.check.start(campaignId);
+  }
+
+  /**
+   * POST .../reels/adopt — copy imported reels in as video submissions.
+   *
+   * From then on a reel is an ordinary submission: it appears in the campaign
+   * feed, is scored by the same duplicate check as an editor's upload, and can
+   * be shared with vendors. A duplicate check over the campaign starts once
+   * the copying finishes.
+   */
+  @Post("adopt")
+  adoptReels(
+    @Param("campaignId") campaignId: string,
+    @Body() body: AdoptReelsDto,
+  ): Promise<AdoptResultDto> {
+    return this.adopt.adoptAll(campaignId, body.editorId);
   }
 }
