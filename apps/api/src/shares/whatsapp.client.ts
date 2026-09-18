@@ -18,9 +18,12 @@ export interface WhatsAppSendResult {
 /**
  * Meta took the request but will not deliver it.
  *
- * Raised for a free-form message sent outside the 24-hour window, which Meta
- * answers with 200, a message id and no `message_status` — no error code, no
- * warning. The caller retries with an approved template.
+ * Raised when Meta reports the message as `held` rather than sent. An absent
+ * `message_status` is NOT this case: ordinary successful sends omit the field
+ * entirely, and reading that as a drop made every delivered text trigger the
+ * fallback template on top of itself.
+ *
+ * The caller retries with an approved template.
  */
 export class WhatsAppNotDeliverable extends Error {
   constructor(readonly messageId: string) {
@@ -241,11 +244,13 @@ function readMessage(
   if (typeof first.id !== "string") return null;
   return {
     id: first.id,
-    // Meta answers 200 with an id and NO `message_status` for a free-form
-    // message sent outside the 24-hour window: it takes the request and drops
-    // the message, without an error anywhere. Treating that as sent is how a
-    // vendor silently never hears from us, so only an explicit "accepted"
-    // counts as delivered to WhatsApp.
-    accepted: first.message_status === "accepted",
+    // A 200 with a message id is an accepted send. `message_status` is absent
+    // from ordinary successful responses — verified against the live API — so
+    // requiring it treated every delivered message as a silent drop and sent
+    // the fallback template on top of a text the vendor had already received.
+    //
+    // The one value that does mean "taken but not delivered" is "held", for a
+    // message Meta is holding rather than sending on.
+    accepted: first.message_status !== "held",
   };
 }

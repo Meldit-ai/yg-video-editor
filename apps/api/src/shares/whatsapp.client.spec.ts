@@ -39,13 +39,24 @@ describe("WhatsAppClient", () => {
     });
   });
 
-  it("refuses a 200 that carries an id but no message_status", async () => {
-    // What Meta actually answers for a free-form message sent outside the
-    // 24-hour window: it takes the request, returns an id, and drops the
-    // message — no error code anywhere. Recording that as sent is how a
-    // vendor silently never hears from us.
+  it("accepts a 200 that carries an id and no message_status", async () => {
+    // This is what Meta actually returns for an ordinary successful send —
+    // verified against the live API. Reading it as a silent drop made every
+    // delivered text fire the fallback template too, so vendors received the
+    // links and then a template telling them about the same links.
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({ messages: [{ id: "wamid.dropped" }] }),
+      jsonResponse({ messages: [{ id: "wamid.ok" }] }),
+    );
+
+    await expect(client.sendText("919999999999", "hi")).resolves.toEqual({
+      messageId: "wamid.ok",
+    });
+  });
+
+  it("refuses a message Meta says it is holding", async () => {
+    // The one status that does mean "taken but not delivered".
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ messages: [{ id: "wamid.held", message_status: "held" }] }),
     );
 
     await expect(client.sendText("919999999999", "hi")).rejects.toBeInstanceOf(
@@ -55,7 +66,9 @@ describe("WhatsAppClient", () => {
 
   it("carries the id on the not-deliverable error, so the drop is traceable", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({ messages: [{ id: "wamid.dropped" }] }),
+      jsonResponse({
+        messages: [{ id: "wamid.dropped", message_status: "held" }],
+      }),
     );
 
     await expect(client.sendText("919999999999", "hi")).rejects.toMatchObject({
