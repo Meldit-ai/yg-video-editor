@@ -1,7 +1,9 @@
 import { Injectable, Logger, ServiceUnavailableException } from "@nestjs/common";
+import { ownObjectKey } from "./object-key.js";
 import type { Readable } from "node:stream";
 import {
   DeleteObjectCommand,
+  HeadObjectCommand,
   GetObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -126,6 +128,44 @@ export class StorageService {
    * Virtual-hosted style, matching the SDK's own addressing — see the class
    * comment for why path style is not used.
    */
+  /**
+   * The key a URL names inside our own bucket, or null when it is elsewhere.
+   *
+   * The tracker writes a campaign's reels into this same bucket, so a reel is
+   * already one of our objects and there is nothing to copy — see
+   * `ownObjectKey`.
+   */
+  objectKeyOf(url: string): string | null {
+    const { config } = this.connection();
+    return ownObjectKey(url, config.endpoint, config.bucket);
+  }
+
+  /**
+   * An object's type and size, or null when it cannot be read.
+   *
+   * Used when adopting a reel that already lives in our bucket: the row still
+   * needs a content type and a size, and asking the bucket is both cheaper and
+   * more trustworthy than a header from whoever served the URL.
+   */
+  async statObject(
+    key: string,
+  ): Promise<{ contentType: string; sizeBytes: number } | null> {
+    const { client, config } = this.connection();
+    try {
+      const head = await client.send(
+        new HeadObjectCommand({ Bucket: config.bucket, Key: key }),
+      );
+      return {
+        contentType: head.ContentType ?? "video/mp4",
+        sizeBytes: Number(head.ContentLength ?? 0),
+      };
+    } catch {
+      // A missing or unreadable object is not fatal here — the caller stores
+      // sensible defaults rather than abandoning the adoption.
+      return null;
+    }
+  }
+
   publicObjectUrl(key: string): string {
     const { config } = this.connection();
     const host = new URL(config.endpoint).host;

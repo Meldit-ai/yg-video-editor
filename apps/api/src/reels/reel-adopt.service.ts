@@ -161,6 +161,31 @@ export class ReelAdoptService {
     reel: { id: string; username: string; mediaUrl: string },
     source: SubmissionSource,
   ): Promise<void> {
+    const fileName = `${reel.username} [reel ${reel.id}].mp4`;
+
+    // The tracker writes a campaign's reels into the very bucket this app
+    // uploads to, so a reel is already one of our objects. Referencing it
+    // costs nothing and stores nothing; copying it would put a second
+    // identical file in the bucket for every reel adopted. Measured on one
+    // campaign, copying turned 82 distinct files into 195 objects — 402MB of
+    // the 742MB stored was a duplicate of something already there.
+    const existingKey = this.storage.objectKeyOf(reel.mediaUrl);
+    if (existingKey !== null) {
+      const head = await this.storage.statObject(existingKey);
+      await this.prisma.client.videoSubmission.create({
+        data: {
+          campaignId,
+          editorId,
+          fileName,
+          objectKey: existingKey,
+          contentType: head?.contentType ?? "video/mp4",
+          sizeBytes: head?.sizeBytes ?? 0,
+          source,
+        },
+      });
+      return;
+    }
+
     const response = await fetch(reel.mediaUrl, {
       signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
     });
@@ -169,7 +194,6 @@ export class ReelAdoptService {
     }
 
     const contentType = response.headers.get("content-type") ?? "video/mp4";
-    const fileName = `${reel.username} [reel ${reel.id}].mp4`;
     const objectKey = buildObjectKey(campaignId, fileName);
 
     // Streamed rather than buffered: a reel is small, but the same path will
