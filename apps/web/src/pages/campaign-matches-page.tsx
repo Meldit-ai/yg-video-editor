@@ -166,6 +166,7 @@ function MatchRow({ match }: { match: CrossPlatformMatch }) {
           who={match.editorName}
           when={match.uploadedAt}
           isOriginal={match.origin === "EDITOR"}
+          videoUrl={match.playbackUrl}
         />
         <Side
           label="Posted on Instagram"
@@ -173,6 +174,7 @@ function MatchRow({ match }: { match: CrossPlatformMatch }) {
           when={match.postedAt}
           isOriginal={match.origin === "REEL"}
           link={match.permalink}
+          videoUrl={match.reelUrl}
         />
       </div>
 
@@ -202,15 +204,35 @@ function Side({
   when,
   isOriginal,
   link,
+  videoUrl,
 }: {
   label: string
   who: string
   when: string | null
   isOriginal: boolean
   link?: string | null
+  /** The video itself, so a claimed match can be checked by watching it. */
+  videoUrl: string
 }) {
+  const [isUnplayable, setUnplayable] = useState(false)
+
   return (
-    <div className="rounded-md bg-muted/40 px-2.5 py-2">
+    <div className="overflow-hidden rounded-md bg-muted/40">
+      {videoUrl.length === 0 || isUnplayable ? (
+        <div className="flex aspect-video items-center justify-center bg-black/80 text-[12px] text-muted-foreground">
+          Video unavailable
+        </div>
+      ) : (
+        <video
+          controls
+          preload="metadata"
+          src={videoUrl}
+          onError={() => setUnplayable(true)}
+          className="aspect-video w-full bg-black"
+        />
+      )}
+
+      <div className="px-2.5 py-2">
       <div className="flex items-center gap-1.5">
         <span className="text-[11px] tracking-wide text-muted-foreground uppercase">
           {label}
@@ -232,10 +254,11 @@ function Side({
           </a>
         )}
       </div>
-      <p className="mt-0.5 truncate text-[13px]">{who}</p>
-      <p className="text-[12px] text-muted-foreground">
-        {when === null ? "Date unknown" : fullDate(when)}
-      </p>
+        <p className="mt-0.5 truncate text-[13px]">{who}</p>
+        <p className="text-[12px] text-muted-foreground">
+          {when === null ? "Date unknown" : fullDate(when)}
+        </p>
+      </div>
     </div>
   )
 }

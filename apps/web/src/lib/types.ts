@@ -504,10 +504,14 @@ export interface CrossPlatformMatch {
   fileName: string
   editorName: string
   uploadedAt: string
+  /** Signed URL for the edit; expires, so it is not cached client-side. */
+  playbackUrl: string
   reelId: string
   username: string
   permalink: string | null
   postedAt: string | null
+  /** The reel's own file, public on the tracker's storage. */
+  reelUrl: string
   /** Which side was published first. UNKNOWN when the reel has no date. */
   origin: MatchOrigin
   /** Null when the match came from frame signatures rather than the bytes. */

@@ -15,12 +15,19 @@ export interface CrossPlatformMatchDto {
   editorName: string;
   /** When the editor handed it in. */
   uploadedAt: Date;
+  /**
+   * A signed URL for the edit, so the pair can be watched rather than taken on
+   * trust. Short-lived, which is why it is minted per read and never stored.
+   */
+  playbackUrl: string;
 
   reelId: string;
   username: string;
   permalink: string | null;
   /** When it went live on Instagram. Null when upstream sent nothing usable. */
   postedAt: Date | null;
+  /** The reel's own file. Public on the tracker's storage, so unsigned. */
+  reelUrl: string;
 
   /**
    * Which side is the original — the one that was published first.

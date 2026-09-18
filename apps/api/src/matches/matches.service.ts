@@ -51,6 +51,9 @@ interface MatchPair {
   editorName: string;
   username: string;
   permalink: string | null;
+  /** Signed at the end of the run, once, rather than per candidate pair. */
+  playbackUrl: string;
+  reelUrl: string;
 }
 
 /** An upload's frame overlap with one reel, as counted by the database. */
@@ -141,28 +144,43 @@ export class MatchesService {
       where: { campaignId, active: true },
       include: {
         submission: {
-          select: { fileName: true, editor: { select: { name: true } } },
+          select: {
+            fileName: true,
+            objectKey: true,
+            contentType: true,
+            editor: { select: { name: true } },
+          },
         },
-        reel: { select: { username: true, permalink: true } },
+        reel: { select: { username: true, permalink: true, mediaUrl: true } },
       },
       orderBy: { uploadedAt: "desc" },
     });
 
-    return rows.map((row) => ({
-      id: row.id,
-      submissionId: row.submissionId,
-      fileName: row.submission.fileName,
-      editorName: row.submission.editor.name,
-      uploadedAt: row.uploadedAt,
-      reelId: row.reelId,
-      username: row.reel.username,
-      permalink: row.reel.permalink,
-      postedAt: row.postedAt,
-      origin: row.origin,
-      contentHash: row.contentHash,
-      frameShare: row.frameShare,
-      checkedAt: row.updatedAt,
-    }));
+    // Signing is a local HMAC rather than a network call, so a page of them
+    // costs nothing to mint together.
+    return Promise.all(
+      rows.map(async (row) => ({
+        id: row.id,
+        submissionId: row.submissionId,
+        fileName: row.submission.fileName,
+        editorName: row.submission.editor.name,
+        uploadedAt: row.uploadedAt,
+        playbackUrl: await this.storage.presignPlaybackUrl(
+          row.submission.objectKey,
+          row.submission.fileName,
+          row.submission.contentType,
+        ),
+        reelId: row.reelId,
+        username: row.reel.username,
+        permalink: row.reel.permalink,
+        postedAt: row.postedAt,
+        reelUrl: row.reel.mediaUrl,
+        origin: row.origin,
+        contentHash: row.contentHash,
+        frameShare: row.frameShare,
+        checkedAt: row.updatedAt,
+      })),
+    );
   }
 
   private async hashSubmissions(campaignId: string): Promise<number> {
@@ -396,6 +414,8 @@ export class MatchesService {
       select: {
         id: true,
         fileName: true,
+        objectKey: true,
+        contentType: true,
         contentHash: true,
         createdAt: true,
         editor: { select: { name: true } },
@@ -411,6 +431,7 @@ export class MatchesService {
         username: true,
         permalink: true,
         postedAt: true,
+        mediaUrl: true,
         contentHash: true,
       },
     });
@@ -458,6 +479,10 @@ export class MatchesService {
           editorName: submission.editor.name,
           username: reel.username,
           permalink: reel.permalink,
+          // Placeholder: signing every candidate would sign pairs that are
+          // then discarded, so the real URL is minted once below.
+          playbackUrl: "",
+          reelUrl: reel.mediaUrl,
         });
       };
 
@@ -524,21 +549,42 @@ export class MatchesService {
       }
     });
 
-    return pairs.map((pair) => ({
-      id: `${pair.submissionId}:${pair.reelId}`,
-      submissionId: pair.submissionId,
-      fileName: pair.fileName,
-      editorName: pair.editorName,
-      uploadedAt: pair.uploadedAt,
-      reelId: pair.reelId,
-      username: pair.username,
-      permalink: pair.permalink,
-      postedAt: pair.postedAt,
-      origin: pair.origin,
-      contentHash: pair.contentHash,
-      frameShare: pair.frameShare,
-      checkedAt: now,
-    }));
+    const keyById = new Map(
+      submissions.map((row) => [
+        row.id,
+        { objectKey: row.objectKey, contentType: row.contentType },
+      ]),
+    );
+
+    return Promise.all(
+      pairs.map(async (pair) => {
+        const source = keyById.get(pair.submissionId);
+        return {
+          id: `${pair.submissionId}:${pair.reelId}`,
+          submissionId: pair.submissionId,
+          fileName: pair.fileName,
+          editorName: pair.editorName,
+          uploadedAt: pair.uploadedAt,
+          playbackUrl:
+            source === undefined
+              ? ""
+              : await this.storage.presignPlaybackUrl(
+                  source.objectKey,
+                  pair.fileName,
+                  source.contentType,
+                ),
+          reelId: pair.reelId,
+          username: pair.username,
+          permalink: pair.permalink,
+          postedAt: pair.postedAt,
+          reelUrl: pair.reelUrl,
+          origin: pair.origin,
+          contentHash: pair.contentHash,
+          frameShare: pair.frameShare,
+          checkedAt: now,
+        };
+      }),
+    );
   }
 }
 
