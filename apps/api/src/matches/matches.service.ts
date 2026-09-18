@@ -442,7 +442,14 @@ export class MatchesService {
         pairs.push({
           submissionId: submission.id,
           reelId: reel.id,
-          contentHash: submission.contentHash,
+          // Only when both sides really are the same file. A frame match is
+          // the same footage re-encoded, and recording the upload's own hash
+          // there made the pair read as byte-identical when it is not.
+          contentHash:
+            submission.contentHash !== null &&
+            submission.contentHash === reel.contentHash
+              ? submission.contentHash
+              : null,
           frameShare: share,
           origin: originOf(submission.createdAt, reel.postedAt),
           uploadedAt: submission.createdAt,

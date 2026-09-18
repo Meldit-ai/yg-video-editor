@@ -51,3 +51,33 @@ describe("isSameFootage", () => {
     expect(MATCH_FRAME_SHARE).toBeLessThan(73);
   });
 });
+
+describe("what a recorded match claims", () => {
+  /**
+   * A pair found by frame signatures is the same footage re-encoded, so the
+   * two files differ by definition. Storing the upload's own hash on such a
+   * pair made it read as byte-identical — 113 of 199 stored matches claimed
+   * "identical file" while the two hashes were different.
+   *
+   * The hash belongs on the row only when both sides carry the same one.
+   */
+  function sharedHash(
+    uploadHash: string | null,
+    reelHash: string | null,
+  ): string | null {
+    return uploadHash !== null && uploadHash === reelHash ? uploadHash : null;
+  }
+
+  it("keeps the hash when both sides are the same file", () => {
+    expect(sharedHash("abc123", "abc123")).toBe("abc123");
+  });
+
+  it("drops it when the files differ, however they matched", () => {
+    expect(sharedHash("abc123", "def456")).toBeNull();
+  });
+
+  it("drops it when either side was never hashed", () => {
+    expect(sharedHash("abc123", null)).toBeNull();
+    expect(sharedHash(null, "abc123")).toBeNull();
+  });
+});
