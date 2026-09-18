@@ -70,6 +70,33 @@ describe("ComparisonEngineClient", () => {
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
+    it("retries a plain 503 — a proxy or uvicorn refusing under load, not the engine", async () => {
+      const fetchMock = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(new Response("Service Unavailable", { status: 503 }))
+        .mockResolvedValueOnce(new Response("Service Unavailable", { status: 503 }))
+        .mockResolvedValueOnce(jsonResponse({ job_id: "job-1" }, 202));
+
+      const pending = client.submitWithBackoff(["u1", "u2"]);
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      await expect(pending).resolves.toBe("job-1");
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it("retries a dropped connection rather than failing the run on one lost packet", async () => {
+      const fetchMock = vi
+        .spyOn(globalThis, "fetch")
+        .mockRejectedValueOnce(new Error("fetch failed: ECONNRESET"))
+        .mockResolvedValueOnce(jsonResponse({ job_id: "job-1" }, 202));
+
+      const pending = client.submitWithBackoff(["u1", "u2"]);
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      await expect(pending).resolves.toBe("job-1");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
     it("throws a non-busy refusal immediately, without retrying", async () => {
       const fetchMock = vi
         .spyOn(globalThis, "fetch")
@@ -145,6 +172,43 @@ describe("ComparisonEngineClient", () => {
       await vi.advanceTimersByTimeAsync(10_000);
 
       await expect(pending).resolves.toMatchObject({ status: "FAILED" });
+    });
+
+    it("rides out a minute of refused polls, backing off while it waits", async () => {
+      const startedAt = Date.now();
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+        // Refused for the first 50 seconds, then the job is there.
+        if (Date.now() - startedAt < 50_000) {
+          return new Response("Service Unavailable", { status: 503 });
+        }
+        return jsonResponse(jobPayload("succeeded"));
+      });
+
+      const pending = client.waitForJob("job-1");
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      await expect(pending).resolves.toMatchObject({ status: "SUCCEEDED" });
+      // Backed off to the slow interval while failing: far fewer than one poll a second.
+      expect(fetchMock.mock.calls.length).toBeLessThan(30);
+    });
+
+    it("gives up on a job whose polls have failed for a whole minute", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response("Service Unavailable", { status: 503 }),
+      );
+
+      let settled: string | null = null;
+      const pending = client.waitForJob("job-1").then(
+        () => (settled = "resolved"),
+        (error: Error) => (settled = error.message),
+      );
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(settled).toBeNull(); // half a minute of refusals is not yet a dead job
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      await pending;
+      expect(settled).toMatch(/HTTP 503/);
     });
 
     it("gives up once the deadline passes", async () => {

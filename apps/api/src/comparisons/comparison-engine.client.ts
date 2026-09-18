@@ -108,11 +108,46 @@ const FAST_POLL_WINDOW_MS = 60_000;
 const DEFAULT_MAX_WAIT_MS = 30 * 60 * 1000;
 
 /**
- * Consecutive failed polls before a job is called dead. At the slow interval
- * that is roughly a minute of engine downtime tolerated mid-job, which covers
- * a restart without abandoning a job that is still running behind it.
+ * How long polls may keep failing before a job is called dead. A minute
+ * covers an engine restart, or a relay/uvicorn refusing under load, without
+ * abandoning a job that is still running behind it. Polls back off to the
+ * slow interval while they fail, so a struggling engine is not hammered.
  */
-const MAX_POLL_FAILURES = 8;
+const POLL_FAILURE_GRACE_MS = 60_000;
+
+/**
+ * Statuses that mean "not now", never "not ever": the engine's own queue-full
+ * 503 (`engine_busy`), uvicorn refusing past its concurrency cap (a plain
+ * 503), a relay or proxy in between (502/504), or a rate limit (429). Each is
+ * worth the same patience as a full queue. A 4xx of any other kind is a
+ * verdict on the request and is thrown at once.
+ */
+const TRANSIENT_STATUSES = new Set([429, 502, 503, 504]);
+
+/** A non-2xx answer, with the status kept so callers can tell overload from refusal. */
+export class EngineHttpError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "EngineHttpError";
+  }
+}
+
+/**
+ * Whether a failed request is worth retrying: an overload-type status, the
+ * engine's busy signal, or the connection itself failing — through a tunnel
+ * one dropped connection is a lost packet, not a dead engine. A sustained
+ * outage still surfaces: the submit backoff and the poll grace both run out.
+ */
+function isTransient(caught: unknown): boolean {
+  if (caught instanceof EngineHttpError) {
+    return TRANSIENT_STATUSES.has(caught.status) || isEngineBusy(caught.message);
+  }
+  const message = messageOf(caught);
+  return isEngineBusy(message) || message.includes("could not reach the comparison engine");
+}
 
 /** Whether a refusal was the engine's queue being full, rather than a fault. */
 function isEngineBusy(message: string): boolean {
@@ -204,10 +239,9 @@ export class ComparisonEngineClient {
       try {
         return await this.submit(urls);
       } catch (caught) {
-        const message = messageOf(caught);
-        if (!isEngineBusy(message) || attempt >= SUBMIT_ATTEMPTS) throw caught;
+        if (!isTransient(caught) || attempt >= SUBMIT_ATTEMPTS) throw caught;
         this.logger.debug(
-          `Engine queue is full (attempt ${attempt}/${SUBMIT_ATTEMPTS}); waiting for room`,
+          `Engine not accepting work (attempt ${attempt}/${SUBMIT_ATTEMPTS}): ${messageOf(caught)}; retrying`,
         );
         await pause(SUBMIT_BACKOFF_MS, signal);
       }
@@ -229,12 +263,16 @@ export class ComparisonEngineClient {
   ): Promise<EngineJob> {
     const maxWaitMs = options.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
     const startedAt = Date.now();
-    let failures = 0;
+    /** When the current streak of failed polls began; null while polls succeed. */
+    let failingSince: number | null = null;
 
     for (;;) {
       // Throws an AbortError when the signal fires mid-sleep, which is the
       // "stopped by the caller" outcome and is left to propagate as such.
-      await pause(this.pollInterval(startedAt), options.signal);
+      await pause(
+        failingSince === null ? this.pollInterval(startedAt) : SLOW_POLL_MS,
+        options.signal,
+      );
 
       if (Date.now() - startedAt > maxWaitMs) {
         throw new Error(
@@ -245,10 +283,10 @@ export class ComparisonEngineClient {
       let job: EngineJob;
       try {
         job = await this.fetchJob(jobId);
-        failures = 0;
+        failingSince = null;
       } catch (caught) {
-        failures += 1;
-        if (failures < MAX_POLL_FAILURES) continue;
+        failingSince ??= Date.now();
+        if (Date.now() - failingSince < POLL_FAILURE_GRACE_MS) continue;
         throw caught;
       }
 
@@ -333,7 +371,8 @@ export class ComparisonEngineClient {
 
     if (!response.ok) {
       const detail = (await response.text().catch(() => "")).trim();
-      throw new Error(
+      throw new EngineHttpError(
+        response.status,
         `the comparison engine answered HTTP ${response.status}` +
           (detail.length > 0 ? `: ${detail.slice(0, 400)}` : ""),
       );

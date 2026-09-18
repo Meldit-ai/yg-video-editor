@@ -140,6 +140,10 @@ Four things bite:
   arrival order — literally the same loop); a threshold edit re-labels from
   stored values in `CampaignsService.update`'s transaction with zero engine
   calls, and does *not* ripple forward — that is what the rebuild is for.
+  A batch that stops (engine unreachable for a minute) leaves its videos
+  pending; every `RESUME_INTERVAL_MS` (2 min) the service picks up any
+  campaign with pending videos and no batch running, so an outage heals
+  without a restart or a new upload.
 - **Work is serialised per `kind:campaignId`** in an in-process promise
   queue, because sequencing is the algorithm — the second video's baseline
   must include the first's label. Calls for one candidate go one at a time

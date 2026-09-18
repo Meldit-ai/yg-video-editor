@@ -41,6 +41,15 @@ const CALL_ATTEMPTS = 2;
 
 const RESTART_MESSAGE = "The server restarted while this check was running.";
 
+/**
+ * How often a campaign with pending videos but no running batch is picked
+ * up again. A batch stops when the engine is unreachable for long enough
+ * — a dead engine, a dropped tunnel — and nothing else would restart it
+ * until the next upload or API boot. Two minutes is prompt for an
+ * unattended run and costs one cheap query per target when idle.
+ */
+export const RESUME_INTERVAL_MS = 2 * 60 * 1000;
+
 function messageOf(caught: unknown): string {
   return caught instanceof Error ? caught.message : String(caught);
 }
@@ -89,6 +98,7 @@ export class UniquenessService
 
   /** Fires on shutdown, so a batch mid-engine-call stops waiting. */
   private readonly stopping = new AbortController();
+  private resumeTimer: ReturnType<typeof setInterval> | null = null;
 
   // Typed as the interface so a test can hand in an in-memory target; the
   // explicit tokens are what Nest resolves at runtime.
@@ -212,6 +222,9 @@ export class UniquenessService
   async onApplicationBootstrap(): Promise<void> {
     if (process.env.UNIQUENESS_SWEEP_ON_BOOT === "false") return;
 
+    this.resumeTimer = setInterval(() => void this.resumePending(), RESUME_INTERVAL_MS);
+    this.resumeTimer.unref?.();
+
     for (const target of [this.submissions, this.reels]) {
       try {
         const failed = await target.failLiveRuns(RESTART_MESSAGE);
@@ -238,7 +251,35 @@ export class UniquenessService
   }
 
   onModuleDestroy(): void {
+    if (this.resumeTimer !== null) clearInterval(this.resumeTimer);
+    this.resumeTimer = null;
     this.stopping.abort();
+  }
+
+  /**
+   * Picks up every campaign that has pending videos and no batch running —
+   * the ones a stopped batch left behind. A campaign already being
+   * classified is left alone: its own loop will reach whatever is pending.
+   * Never throws; a database hiccup here is retried on the next tick.
+   */
+  private async resumePending(): Promise<void> {
+    if (this.stopping.signal.aborted) return;
+    for (const target of [this.submissions, this.reels]) {
+      try {
+        const campaigns = await target.campaignsWithPending();
+        const idle = campaigns.filter(
+          (campaignId) => !this.queues.has(`${target.kind}:${campaignId}`),
+        );
+        for (const campaignId of idle) this.onArrival(target.kind, campaignId);
+        if (idle.length > 0) {
+          this.logger.log(
+            `Resuming ${target.kind} classification on ${idle.length} campaign(s) left pending`,
+          );
+        }
+      } catch (caught) {
+        this.logger.warn(`Could not resume ${target.kind} classification: ${messageOf(caught)}`);
+      }
+    }
   }
 
   /* -------------------------------------------------------------- queue */

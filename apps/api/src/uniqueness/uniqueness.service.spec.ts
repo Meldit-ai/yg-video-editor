@@ -8,7 +8,7 @@ import {
 } from "../comparisons/comparison-engine.types.js";
 import { pairKeyOf } from "../comparisons/engine-result.js";
 import { labelFor, type Candidate, type Outcome } from "./uniqueness.rules.js";
-import { UniquenessService } from "./uniqueness.service.js";
+import { RESUME_INTERVAL_MS, UniquenessService } from "./uniqueness.service.js";
 import type {
   CallRecord,
   RunClosing,
@@ -824,6 +824,52 @@ describe("UniquenessService", () => {
       expect(submissions.runs[1]!.failedOnBoot).toMatch(/restarted/);
       expect(submissions.row("V2").uniqueness).toBe(Uniqueness.DUPLICATE);
       expect(reels.row("R1").uniqueness).toBe(Uniqueness.UNIQUE);
+    });
+
+    it("resumes a campaign whose batch stopped, once the engine is back — without a restart", async () => {
+      vi.useFakeTimers();
+      try {
+        scriptSpecExample();
+        await arrive("V1");
+        await service.onApplicationBootstrap();
+
+        engine.mode = "unreachable";
+        submissions.add(CAMPAIGN, "V2");
+        service.onArrival("submission", CAMPAIGN);
+        await service.whenIdle("submission", CAMPAIGN);
+        expect(submissions.row("V2").uniqueness).toBeNull(); // the outage stopped the batch
+
+        engine.mode = "ok";
+        await vi.advanceTimersByTimeAsync(RESUME_INTERVAL_MS);
+        await service.whenIdle("submission", CAMPAIGN);
+
+        expect(submissions.row("V2").uniqueness).toBe(Uniqueness.DUPLICATE);
+      } finally {
+        service.onModuleDestroy();
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not pile a second pass onto a campaign that is already being classified", async () => {
+      vi.useFakeTimers();
+      try {
+        await service.onApplicationBootstrap();
+        engine.deferred = true;
+        submissions.add(CAMPAIGN, "V1");
+        service.onArrival("submission", CAMPAIGN);
+        await settle();
+
+        await vi.advanceTimersByTimeAsync(RESUME_INTERVAL_MS * 3);
+        engine.deferred = false;
+        engine.release();
+        await service.whenIdle("submission", CAMPAIGN);
+
+        // One batch, one run row — the resume left the busy campaign alone.
+        expect(submissions.runs).toHaveLength(1);
+      } finally {
+        service.onModuleDestroy();
+        vi.useRealTimers();
+      }
     });
 
     it("can be told not to sweep, for one-off scripts", async () => {
