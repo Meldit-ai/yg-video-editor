@@ -210,6 +210,11 @@ export class UniquenessService
     if (process.env.UNIQUENESS_SWEEP_ON_BOOT === "false") return;
 
     for (const target of [this.submissions, this.reels]) {
+      // Per kind, because the two have very different appetites. A campaign's
+      // editor uploads are a handful and must be labelled or the feed shows
+      // nothing; its imported reels can be thousands, and sweeping those on
+      // every boot is hours of engine traffic nobody asked for.
+      if (sweepDisabledFor(target.kind)) continue;
       try {
         const failed = await target.failLiveRuns(RESTART_MESSAGE);
         if (failed > 0) {
@@ -520,4 +525,18 @@ export class UniquenessService
 
     return { kind: "failed" }; // Unreachable: the loop returns on its last attempt.
   }
+}
+
+/**
+ * Whether the boot sweep is switched off for one kind of video.
+ *
+ * `UNIQUENESS_SWEEP_KINDS` names the kinds that may sweep, comma separated;
+ * omitting it lets both. The blunt `UNIQUENESS_SWEEP_ON_BOOT=false` is still
+ * honoured above and disables the lot.
+ */
+export function sweepDisabledFor(kind: TargetKind): boolean {
+  const configured = (process.env.UNIQUENESS_SWEEP_KINDS ?? "").trim();
+  if (configured.length === 0) return false;
+  const allowed = configured.split(",").map((part) => part.trim());
+  return !allowed.includes(kind);
 }

@@ -1,5 +1,5 @@
 import { ComparisonStatus, Uniqueness, type Prisma } from "@repo/database";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi , afterEach } from "vitest";
 import type { ComparisonEngineClient } from "../comparisons/comparison-engine.client.js";
 import {
   verdictFromScore,
@@ -7,7 +7,7 @@ import {
 } from "../comparisons/comparison-engine.types.js";
 import { pairKeyOf } from "../comparisons/engine-result.js";
 import { labelFor, type Candidate, type Outcome } from "./uniqueness.rules.js";
-import { UniquenessService } from "./uniqueness.service.js";
+import { UniquenessService, sweepDisabledFor } from "./uniqueness.service.js";
 import type {
   CallRecord,
   RunClosing,
@@ -687,5 +687,33 @@ describe("UniquenessService", () => {
         delete process.env.UNIQUENESS_SWEEP_ON_BOOT;
       }
     });
+  });
+});
+
+describe("sweepDisabledFor", () => {
+  const previous = process.env.UNIQUENESS_SWEEP_KINDS;
+  afterEach(() => {
+    if (previous === undefined) delete process.env.UNIQUENESS_SWEEP_KINDS;
+    else process.env.UNIQUENESS_SWEEP_KINDS = previous;
+  });
+
+  it("lets both kinds sweep when nothing is configured", () => {
+    delete process.env.UNIQUENESS_SWEEP_KINDS;
+    expect(sweepDisabledFor("submission")).toBe(false);
+    expect(sweepDisabledFor("reel")).toBe(false);
+  });
+
+  it("sweeps only the kinds named", () => {
+    // The deployed setting: a campaign's hand-ins must be labelled, while
+    // sweeping thousands of imported reels is hours of engine traffic.
+    process.env.UNIQUENESS_SWEEP_KINDS = "submission";
+    expect(sweepDisabledFor("submission")).toBe(false);
+    expect(sweepDisabledFor("reel")).toBe(true);
+  });
+
+  it("tolerates spaces around the names", () => {
+    process.env.UNIQUENESS_SWEEP_KINDS = " submission , reel ";
+    expect(sweepDisabledFor("submission")).toBe(false);
+    expect(sweepDisabledFor("reel")).toBe(false);
   });
 });
