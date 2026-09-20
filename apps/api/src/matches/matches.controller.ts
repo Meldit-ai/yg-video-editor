@@ -4,10 +4,7 @@ import { Roles } from "../auth/decorators/roles.decorator.js";
 import { CampaignAccessGuard } from "../campaigns/guards/campaign-access.guard.js";
 import { RunMatchesDto } from "./dto/run-matches.dto.js";
 import { MatchesService } from "./matches.service.js";
-import type {
-  CrossPlatformMatchDto,
-  MatchRunResultDto,
-} from "./matches.types.js";
+import type { MatchGroupDto, MatchRunResultDto } from "./matches.types.js";
 
 /**
  * Editor uploads that turn out to be the very same file as an Instagram reel
@@ -25,14 +22,15 @@ export class MatchesController {
   /**
    * GET .../matches — what the last run found. Computes nothing.
    *
-   * The read anyone asking "what matched?" wants: hashing a campaign takes
-   * minutes, and the answer does not change until new videos arrive.
+   * Grouped by edit: one cut is often posted by several accounts, and showing
+   * them together is what makes the spread visible. Computes nothing — hashing
+   * a campaign takes minutes, and the answer only changes when videos do.
    */
   @Get()
   findAll(
     @Param("campaignId") campaignId: string,
-  ): Promise<CrossPlatformMatchDto[]> {
-    return this.matches.findAll(campaignId);
+  ): Promise<MatchGroupDto[]> {
+    return this.matches.findGroups(campaignId);
   }
 
   /**

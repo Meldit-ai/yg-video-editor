@@ -1,6 +1,6 @@
 import { MatchOrigin } from "@repo/database";
 import { describe, expect, it } from "vitest";
-import { originOf } from "./matches.service.js";
+import { groupOrigin, originOf } from "./matches.service.js";
 
 const UPLOADED = new Date("2026-09-15T10:00:00Z");
 
@@ -29,5 +29,35 @@ describe("originOf", () => {
     // Only reachable when both timestamps are identical to the millisecond.
     // Someone has to win, and the upload is the side we actually observed.
     expect(originOf(UPLOADED, new Date(UPLOADED))).toBe(MatchOrigin.EDITOR);
+  });
+});
+
+describe("groupOrigin", () => {
+  it("calls it the reel's when any one of them predates the edit", () => {
+    // One earlier reel settles it: the footage was already public, and what
+    // the later accounts did changes nothing about that.
+    expect(
+      groupOrigin([MatchOrigin.EDITOR, MatchOrigin.REEL, MatchOrigin.EDITOR]),
+    ).toBe(MatchOrigin.REEL);
+  });
+
+  it("calls it the editor's when the edit came before every reel", () => {
+    expect(groupOrigin([MatchOrigin.EDITOR, MatchOrigin.EDITOR])).toBe(
+      MatchOrigin.EDITOR,
+    );
+  });
+
+  it("stays undecided only when no reel carries a date", () => {
+    expect(groupOrigin([MatchOrigin.UNKNOWN, MatchOrigin.UNKNOWN])).toBe(
+      MatchOrigin.UNKNOWN,
+    );
+  });
+
+  it("prefers a dated reel over an undated one", () => {
+    // An unknown date is absence of evidence, so it must not outvote a reel
+    // whose date is known.
+    expect(groupOrigin([MatchOrigin.UNKNOWN, MatchOrigin.EDITOR])).toBe(
+      MatchOrigin.EDITOR,
+    );
   });
 });

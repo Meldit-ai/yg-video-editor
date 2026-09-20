@@ -13,6 +13,7 @@ import {
 } from "./matches.rules.js";
 import type {
   CrossPlatformMatchDto,
+  MatchGroupDto,
   MatchRunResultDto,
 } from "./matches.types.js";
 
@@ -118,7 +119,8 @@ export class MatchesService {
     await this.fingerprintSubmissions(campaignId);
     await this.fingerprintReels(campaignId, reelLimit);
 
-    const matches = await this.rebuildMatches(campaignId);
+    await this.rebuildMatches(campaignId);
+    const matches = await this.findGroups(campaignId);
 
     const unhashedReels = await this.prisma.client.campaignReel.count({
       where: { campaignId, active: true, contentHash: null },
@@ -180,6 +182,69 @@ export class MatchesService {
         frameShare: row.frameShare,
         checkedAt: row.updatedAt,
       })),
+    );
+  }
+
+  /**
+   * The stored matches, grouped by the edit they belong to.
+   *
+   * The same cut is often posted by several accounts, and a flat list of pairs
+   * repeats the edit once per reel while hiding that they are all the same
+   * video. A group shows the edit once and every reel carrying it together.
+   */
+  async findGroups(campaignId: string): Promise<MatchGroupDto[]> {
+    const rows = await this.prisma.client.crossPlatformMatch.findMany({
+      where: { campaignId, active: true },
+      include: {
+        submission: {
+          select: {
+            fileName: true,
+            objectKey: true,
+            contentType: true,
+            createdAt: true,
+            editor: { select: { name: true } },
+          },
+        },
+        reel: { select: { username: true, permalink: true, mediaUrl: true } },
+      },
+      orderBy: [{ uploadedAt: "desc" }, { postedAt: "asc" }],
+    });
+
+    const bySubmission = new Map<string, typeof rows>();
+    for (const row of rows) {
+      const bucket = bySubmission.get(row.submissionId) ?? [];
+      bucket.push(row);
+      bySubmission.set(row.submissionId, bucket);
+    }
+
+    return Promise.all(
+      [...bySubmission.values()].map(async (group) => {
+        const first = group[0]!;
+        return {
+          submissionId: first.submissionId,
+          fileName: first.submission.fileName,
+          editorName: first.submission.editor.name,
+          uploadedAt: first.uploadedAt,
+          playbackUrl: await this.storage.presignPlaybackUrl(
+            first.submission.objectKey,
+            first.submission.fileName,
+            first.submission.contentType,
+          ),
+          reels: group.map((row) => ({
+            reelId: row.reelId,
+            username: row.reel.username,
+            permalink: row.reel.permalink,
+            postedAt: row.postedAt,
+            reelUrl: row.reel.mediaUrl,
+            origin: row.origin,
+            contentHash: row.contentHash,
+          })),
+          // One reel predating the edit is enough to say the footage was out
+          // there first, whatever the others did.
+          origin: groupOrigin(group.map((row) => row.origin)),
+          checkedAt: first.updatedAt,
+        };
+      }),
     );
   }
 
@@ -602,4 +667,17 @@ export function originOf(
   return postedAt.getTime() < uploadedAt.getTime()
     ? MatchOrigin.REEL
     : MatchOrigin.EDITOR;
+}
+
+/**
+ * A group's origin, from the origins of the reels in it.
+ *
+ * REEL wins outright: if any one of them was posted before the edit was handed
+ * in, the footage was already public, and the later reels change nothing about
+ * that. UNKNOWN only when not a single reel carries a date.
+ */
+export function groupOrigin(origins: readonly MatchOrigin[]): MatchOrigin {
+  if (origins.includes(MatchOrigin.REEL)) return MatchOrigin.REEL;
+  if (origins.includes(MatchOrigin.EDITOR)) return MatchOrigin.EDITOR;
+  return MatchOrigin.UNKNOWN;
 }

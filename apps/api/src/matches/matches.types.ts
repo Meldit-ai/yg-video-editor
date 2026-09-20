@@ -64,6 +64,48 @@ export interface MatchRunResultDto {
   hashedReels: number;
   /** Reels on the campaign that still have no hash, after this run. */
   unhashedReels: number;
+  /** Edits that matched at least one reel. */
   matchCount: number;
-  matches: CrossPlatformMatchDto[];
+  matches: MatchGroupDto[];
+}
+
+/** One reel carrying an edit's footage, inside a match group. */
+export interface MatchedReelDto {
+  reelId: string;
+  username: string;
+  permalink: string | null;
+  postedAt: Date | null;
+  reelUrl: string;
+  /** Whether this reel went live before the edit was handed in. */
+  origin: MatchOrigin;
+  /** Set when this reel is the very same file as the edit. */
+  contentHash: string | null;
+}
+
+/**
+ * One edit and every reel found to carry the same video.
+ *
+ * Grouped rather than listed pair by pair: the same cut is often posted by
+ * several accounts, and seeing them together is what shows how far it spread.
+ * Every reel in a group is an exact match to the edit — the group is not a
+ * ranking, and there is no weaker member.
+ */
+export interface MatchGroupDto {
+  submissionId: string;
+  fileName: string;
+  editorName: string;
+  uploadedAt: Date;
+  playbackUrl: string;
+
+  /** Oldest post first, so the earliest publisher reads at the top. */
+  reels: MatchedReelDto[];
+
+  /**
+   * Which side published first, taken over the whole group: REEL when any reel
+   * predates the edit, EDITOR when the edit predates all of them, UNKNOWN when
+   * no reel carries a date to judge by.
+   */
+  origin: MatchOrigin;
+
+  checkedAt: Date;
 }

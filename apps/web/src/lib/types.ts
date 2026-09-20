@@ -527,6 +527,36 @@ export interface MatchRunResult {
   hashedReels: number
   /** Reels still without a hash, so the caller knows to run again. */
   unhashedReels: number
+  /** Edits that matched at least one reel. */
   matchCount: number
-  matches: CrossPlatformMatch[]
+  matches: MatchGroup[]
+}
+
+/** One reel carrying an edit's footage, inside a match group. */
+export interface MatchedReel {
+  reelId: string
+  username: string
+  permalink: string | null
+  postedAt: string | null
+  reelUrl: string
+  origin: MatchOrigin
+  /** Set when this reel is the very same file as the edit. */
+  contentHash: string | null
+}
+
+/**
+ * One edit and every reel carrying the same video.
+ *
+ * Every reel in a group is an exact match; the group is not a ranking.
+ */
+export interface MatchGroup {
+  submissionId: string
+  fileName: string
+  editorName: string
+  uploadedAt: string
+  playbackUrl: string
+  /** Oldest post first. */
+  reels: MatchedReel[]
+  origin: MatchOrigin
+  checkedAt: string
 }
