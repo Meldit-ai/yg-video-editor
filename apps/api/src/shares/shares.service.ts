@@ -197,7 +197,10 @@ export class SharesService {
       data: {
         campaignId,
         createdById: user.id,
-        messageBody: input.message,
+        // What was actually sent, links and all, rather than only the note the
+        // admin typed. A vendor replying weeks later is answering this text,
+        // and the reply cannot be read against a message we did not keep.
+        messageBody: body,
         submissionIds: submissions.map((submission) => submission.id),
         recipients: {
           create: vendors.map((vendor) => {
@@ -221,7 +224,7 @@ export class SharesService {
     await this.deliver(share.id, body, {
       campaignTitle: campaign.title,
       videoCount: submissions.length,
-      firstLink: links[0] ?? "",
+      links,
     });
 
     const updated = await this.prisma.client.vendorShare.findUniqueOrThrow({
@@ -268,7 +271,11 @@ export class SharesService {
   private async deliver(
     shareId: string,
     body: string,
-    context: { campaignTitle: string; videoCount: number; firstLink: string },
+    context: {
+      campaignTitle: string;
+      videoCount: number;
+      links: readonly string[];
+    },
   ): Promise<void> {
     const pending = await this.prisma.client.vendorShareRecipient.findMany({
       where: { shareId, status: VendorShareStatus.PENDING },
@@ -326,7 +333,7 @@ export class SharesService {
     context: {
       campaignTitle: string;
       videoCount: number;
-      firstLink: string;
+      links: readonly string[];
       vendorName: string;
       attempts: number;
     },
@@ -351,7 +358,7 @@ export class SharesService {
           context.vendorName,
           String(context.videoCount),
           context.campaignTitle,
-          context.firstLink,
+          templateLinks(context.links),
         ]);
       }
 
@@ -403,6 +410,23 @@ export class SharesService {
 /** Meta's way of saying the free-form window is shut. */
 function isOutsideWindow(error: WhatsAppError): boolean {
   return error.code !== null && OUTSIDE_WINDOW_CODES.has(error.code);
+}
+
+/**
+ * Every link, in the one slot the approved template gives us.
+ *
+ * Separated by spaces rather than newlines, which is not a style choice:
+ * checked against the live API, a variable carrying several links separated by
+ * spaces is accepted, and the same text with a newline is refused outright
+ * with `(#132018) There is an issue with the parameters in your template`.
+ *
+ * This is what a share of several videos used to lose. The free-form path
+ * composed the whole list, but the template was handed `links[0]` alone, so a
+ * vendor outside the 24-hour window received one link however many were sent
+ * — and which path runs is invisible to the admin, so it read as intermittent.
+ */
+export function templateLinks(links: readonly string[]): string {
+  return links.join(" ");
 }
 
 /**
