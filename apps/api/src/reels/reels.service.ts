@@ -3,6 +3,7 @@ import { Uniqueness, type Prisma } from "@repo/database";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { TrackerService, type TrackerReel } from "../tracker/tracker.service.js";
 import { UniquenessService } from "../uniqueness/uniqueness.service.js";
+import { headMediaAll } from "./media-head.js";
 import type { CampaignReelDto, ReelImportResultDto } from "./reels.types.js";
 
 const WITH_ORIGINAL = {
@@ -86,10 +87,18 @@ export class ReelsService {
     });
     const known = new Set(existing.map((row) => row.trackerPostId));
 
+    // Size and ETag for every reel, from a HEAD apiece. Hetzner's ETag is the
+    // MD5 of a single-part object, so this tells two reels apart — or proves
+    // them the same file — without downloading either.
+    const withIdentity = withMediaIdentity(
+      ordered,
+      await headMediaAll(ordered.map((reel) => reel.mediaUrl)),
+    );
+
     let imported = 0;
     let updated = 0;
 
-    for (const batch of chunk(ordered, UPSERT_BATCH)) {
+    for (const batch of chunk(withIdentity, UPSERT_BATCH)) {
       // Batched rather than one transaction over the lot: a single transaction
       // holding thousands of writes is a long lock, and an import that fails
       // halfway has still stored what it read.
@@ -102,10 +111,10 @@ export class ReelsService {
                 trackerPostId: reel.trackerPostId,
               },
             },
-            create: { campaignId, ...toRow(reel) },
+            create: { campaignId, ...reelRowFrom(reel) },
             // Labels are deliberately not cleared on re-import: re-running an
             // import must not throw away a classification that already ran.
-            update: toRow(reel),
+            update: reelRowFrom(reel),
           }),
         ),
       );
@@ -191,6 +200,23 @@ function chunk<T>(items: readonly T[], size: number): T[][] {
   return batches;
 }
 
+/**
+ * Attaches what object storage said about each reel's media. A HEAD that
+ * failed leaves the fields absent, so the row keeps whatever it had.
+ */
+export function withMediaIdentity(
+  reels: readonly TrackerReel[],
+  heads: readonly { sizeBytes: number | null; etag: string | null }[],
+): TrackerReel[] {
+  return reels.map((reel, index) => {
+    const head = heads[index];
+    if (head === undefined || (head.sizeBytes === null && head.etag === null)) {
+      return reel;
+    }
+    return { ...reel, mediaSizeBytes: head.sizeBytes, mediaEtag: head.etag };
+  });
+}
+
 /** Oldest Instagram post first; unknown dates last. */
 function compareByPostedAt(left: TrackerReel, right: TrackerReel): number {
   if (left.postedAt === null && right.postedAt === null) return 0;
@@ -199,8 +225,13 @@ function compareByPostedAt(left: TrackerReel, right: TrackerReel): number {
   return left.postedAt.getTime() - right.postedAt.getTime();
 }
 
-/** The columns an import writes, shared by create and update. */
-function toRow(reel: TrackerReel) {
+/**
+ * The columns an import writes, shared by create and update — and by the
+ * `import-tracker-reels` script, so a reel looks the same whichever way it
+ * came in. Deliberately never includes a label or score: a re-import must not
+ * throw away a check that already ran.
+ */
+export function reelRowFrom(reel: TrackerReel) {
   return {
     trackerPostId: reel.trackerPostId,
     socialUsername: reel.socialUsername,
@@ -211,6 +242,10 @@ function toRow(reel: TrackerReel) {
     postCounts: reel.postCounts as Prisma.InputJsonValue,
     caption: reel.caption,
     invoiceApproved: reel.invoiceApproved,
+    // Only when a HEAD was made: `undefined` is "leave it" to Prisma, and a
+    // re-import that skipped the HEAD must not erase a known identity.
+    ...(reel.mediaSizeBytes === undefined ? {} : { mediaSizeBytes: reel.mediaSizeBytes }),
+    ...(reel.mediaEtag === undefined ? {} : { mediaEtag: reel.mediaEtag }),
   };
 }
 

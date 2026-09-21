@@ -167,7 +167,7 @@ describe("planPinnedCalls", () => {
   const cand = candidate("V5");
 
   it("plans no calls against an empty baseline", () => {
-    expect(planPinnedCalls(cand, [], 4)).toEqual({ calls: [], sameUrl: [] });
+    expect(planPinnedCalls(cand, [], 4)).toEqual({ calls: [], twins: [] });
   });
 
   it("pins the candidate first and fills the rest of the call with baseline", () => {
@@ -195,7 +195,7 @@ describe("planPinnedCalls", () => {
     const other = candidate("R1");
     expect(planPinnedCalls(cand, [twin, other], 4)).toEqual({
       calls: [[cand, other]],
-      sameUrl: [twin],
+      twins: [twin],
     });
   });
 
@@ -203,7 +203,26 @@ describe("planPinnedCalls", () => {
     const twin = candidate("R2", cand.url);
     expect(planPinnedCalls(cand, [twin], 4)).toEqual({
       calls: [],
-      sameUrl: [twin],
+      twins: [twin],
     });
+  });
+
+  it("treats a baseline video with the same content identity as a twin, too", () => {
+    // Same bytes at a different URL: a re-upload of the same file. Hetzner's
+    // ETag (or a submission's sha256) says so without the engine.
+    const me = { ...cand, identity: "etag:abc" };
+    const same = { ...candidate("R1"), identity: "etag:abc" };
+    const other = { ...candidate("R3"), identity: "etag:zzz" };
+    expect(planPinnedCalls(me, [same, other], 4)).toEqual({
+      calls: [[me, other]],
+      twins: [same],
+    });
+  });
+
+  it("never calls two videos twins when either side has no identity", () => {
+    const me = { ...cand, identity: "etag:abc" };
+    const unknown = candidate("R1");
+    expect(planPinnedCalls(me, [unknown], 4).twins).toEqual([]);
+    expect(planPinnedCalls(cand, [{ ...unknown, identity: "etag:abc" }], 4).twins).toEqual([]);
   });
 });

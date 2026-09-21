@@ -5,6 +5,12 @@ import type { TrackerReel, TrackerService } from "../tracker/tracker.service.js"
 import type { UniquenessService } from "../uniqueness/uniqueness.service.js";
 import { ReelsService } from "./reels.service.js";
 
+vi.mock("./media-head.js", () => ({
+  headMediaAll: vi.fn(async (urls: string[]) =>
+    urls.map((url) => ({ sizeBytes: 4242, etag: `"etag-of-${url.slice(-6)}"` })),
+  ),
+}));
+
 const reelDelegate = {
   findUnique: vi.fn(),
   upsert: vi.fn(),
@@ -85,6 +91,20 @@ describe("ReelsService", () => {
       await service.importFromTracker("cmp_1");
 
       expect(uniquenessMock.onArrival).toHaveBeenCalledWith("reel", "cmp_1");
+    });
+
+    it("records each imported reel's size and ETag from a HEAD on its media", async () => {
+      trackerMock.listReels.mockResolvedValue([trackerReel("p1")]);
+      reelDelegate.findUnique.mockResolvedValue(null);
+
+      await service.importFromTracker("cmp_1");
+
+      expect(reelDelegate.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({ mediaSizeBytes: 4242, mediaEtag: '"etag-of-p1.mp4"' }),
+          update: expect.objectContaining({ mediaSizeBytes: 4242, mediaEtag: '"etag-of-p1.mp4"' }),
+        }),
+      );
     });
 
     it("leaves the classifier alone when every reel was already known", async () => {

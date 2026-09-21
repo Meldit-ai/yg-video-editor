@@ -19,6 +19,17 @@ const LIVE: ComparisonStatus[] = [
 const PENDING = { uniqueness: null, checkedAt: null } as const;
 
 /**
+ * The ETag as a content identity. Object storage returns it quoted, and a
+ * multipart upload's ETag (`<md5>-<parts>`) is a hash of part hashes rather
+ * than of the bytes — still identical for identical uploads, so it is kept.
+ */
+function identityFromEtag(etag: string | null): string | undefined {
+  if (etag === null) return undefined;
+  const bare = etag.trim().replace(/^W\//, "").replace(/^"|"$/g, "");
+  return bare.length === 0 ? undefined : `etag:${bare}`;
+}
+
+/**
  * Oldest post first. A reel with no post time cannot claim to be anyone's
  * original, so it sorts after every reel that has one; import time breaks
  * ties either way.
@@ -222,13 +233,14 @@ export class ReelTarget implements UniquenessTarget {
   ): Promise<Candidate[]> {
     const rows = await this.prisma.client.campaignReel.findMany({
       where,
-      select: { id: true, mediaUrl: true, postedAt: true, createdAt: true },
+      select: { id: true, mediaUrl: true, postedAt: true, createdAt: true, mediaEtag: true },
       orderBy: ARRIVAL_ORDER,
     });
     return rows.map((row) => ({
       id: row.id,
       url: row.mediaUrl,
       arrivedAt: row.postedAt ?? row.createdAt,
+      identity: identityFromEtag(row.mediaEtag),
     }));
   }
 }

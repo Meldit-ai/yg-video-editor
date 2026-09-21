@@ -3,6 +3,7 @@ import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { Role, SubmissionSource } from "@repo/database";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { StorageService } from "../storage/storage.service.js";
+import { measureStream } from "../submissions/measure-stream.js";
 import { buildObjectKey } from "../submissions/submissions.constants.js";
 import { UniquenessService } from "../uniqueness/uniqueness.service.js";
 
@@ -198,15 +199,18 @@ export class ReelAdoptService {
 
     // Streamed rather than buffered: a reel is small, but the same path will
     // carry longer videos and holding one in memory per reel does not scale.
+    // Measured on the way through — size and digest — never trusted from the
+    // source's headers.
+    const { stream: measuring, result: measured } = measureStream();
     const upload = this.storage.startUpload(
       objectKey,
-      Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]),
+      Readable.fromWeb(
+        response.body as Parameters<typeof Readable.fromWeb>[0],
+      ).pipe(measuring),
       contentType,
     );
     await upload.done();
-
-    // Measured from the object, never trusted from the source's header.
-    const sizeBytes = Number(response.headers.get("content-length") ?? 0);
+    const { sizeBytes, sha256 } = measured();
 
     try {
       await this.prisma.client.videoSubmission.create({
@@ -219,6 +223,7 @@ export class ReelAdoptService {
           sizeBytes,
           // Which workflow this row joins; see adoptAll's `source`.
           source,
+          contentSha256: sha256,
         },
       });
     } catch (caught) {

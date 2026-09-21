@@ -24,17 +24,16 @@ const REQUEST_TIMEOUT_MS = 20_000;
  * The most URLs worth putting in one job, whatever the engine would accept.
  *
  * A job's cost is its *pair* count, which is quadratic in the URLs, and every
- * pair shares one job timeout. Ten URLs is 45 pairs against the engine's
- * default 420s budget — about 9s a pair, while aligning a single pair is
- * allowed up to 90s on its own, so one slow pair starves the rest and the
- * whole batch times out with none of its pairs scored. Six URLs is 15 pairs,
- * which leaves room for the worst case rather than the average one.
- *
- * Capped here rather than left to configuration because it is a property of
- * how the engine spends a job budget, not a deployment choice: a larger value
- * does not run slower, it silently loses pairs.
+ * pair shares one job timeout. But the classifier's jobs are one fresh video
+ * pinned beside cached ones: the pairs among the cached videos are
+ * comparison-cache hits, so a job of 8 costs 7 alignments at the measured
+ * ~0.5 s each, well inside the engine's 420 s budget. Eight is also the
+ * engine's own request cap (its schema). Capped here rather than left to
+ * configuration because it is a property of how the engine spends a job
+ * budget, not a deployment choice: a larger value does not run slower, it
+ * silently loses pairs.
  */
-const SAFE_URLS_PER_JOB = 6;
+const SAFE_URLS_PER_JOB = 8;
 
 /**
  * URLs the engine accepts in one `POST /v1/compare`.
@@ -53,6 +52,31 @@ export function engineMaxUrls(): number {
 }
 
 /**
+ * How many upcoming candidates the classifier fingerprints ahead of time,
+ * in parallel with the one it is labelling. The engine prepares every video
+ * of a job concurrently across its worker pool, but a classifier that sends
+ * one job at a time only ever keeps one worker busy; warming the next few
+ * candidates uses the rest. Default matches the engine's worker count.
+ */
+export function prefetchDepth(): number {
+  const configured = Number(process.env.COMPARISON_ENGINE_PREFETCH ?? "");
+  return Number.isInteger(configured) && configured >= 0 ? configured : 3;
+}
+
+/**
+ * How many of one candidate's pinned calls run at once, once its fingerprint
+ * is cached. Bounded by the engine's active-job slots; past that the extra
+ * calls only queue.
+ */
+export function callConcurrency(): number {
+  const configured = Number(process.env.COMPARISON_ENGINE_CALL_CONCURRENCY ?? "");
+  return Number.isInteger(configured) && configured >= 1 ? configured : 2;
+}
+
+/** A warm-up is discarded work; it is not worth waiting long for. */
+const WARM_MAX_WAIT_MS = 5 * 60 * 1000;
+
+/**
  * How long, and how often, to keep asking a full engine for room.
  *
  * The engine queues a bounded number of jobs and answers 503 `engine_busy`
@@ -63,10 +87,16 @@ export function engineMaxUrls(): number {
 const SUBMIT_ATTEMPTS = 60;
 const SUBMIT_BACKOFF_MS = 5_000;
 
-/** Poll fast while the job is young, then back off — see `pollInterval`. */
-const FAST_POLL_MS = 3_000;
-const SLOW_POLL_MS = 8_000;
-const FAST_POLL_WINDOW_MS = 30_000;
+/**
+ * Poll every second while the job is young, then back off — see
+ * `pollInterval`. A cache-warm comparison finishes on the engine in under a
+ * second, and a classifier pass makes thousands of them, so every second of
+ * polling granularity is paid thousands of times over. A fresh fingerprint
+ * takes tens of seconds; after a minute the call is clearly one of those.
+ */
+const FAST_POLL_MS = 1_000;
+const SLOW_POLL_MS = 3_000;
+const FAST_POLL_WINDOW_MS = 60_000;
 
 /**
  * How long to wait for a job before giving up on it.
@@ -78,11 +108,46 @@ const FAST_POLL_WINDOW_MS = 30_000;
 const DEFAULT_MAX_WAIT_MS = 30 * 60 * 1000;
 
 /**
- * Consecutive failed polls before a job is called dead. At the slow interval
- * that is roughly a minute of engine downtime tolerated mid-job, which covers
- * a restart without abandoning a job that is still running behind it.
+ * How long polls may keep failing before a job is called dead. A minute
+ * covers an engine restart, or a relay/uvicorn refusing under load, without
+ * abandoning a job that is still running behind it. Polls back off to the
+ * slow interval while they fail, so a struggling engine is not hammered.
  */
-const MAX_POLL_FAILURES = 8;
+const POLL_FAILURE_GRACE_MS = 60_000;
+
+/**
+ * Statuses that mean "not now", never "not ever": the engine's own queue-full
+ * 503 (`engine_busy`), uvicorn refusing past its concurrency cap (a plain
+ * 503), a relay or proxy in between (502/504), or a rate limit (429). Each is
+ * worth the same patience as a full queue. A 4xx of any other kind is a
+ * verdict on the request and is thrown at once.
+ */
+const TRANSIENT_STATUSES = new Set([429, 502, 503, 504]);
+
+/** A non-2xx answer, with the status kept so callers can tell overload from refusal. */
+export class EngineHttpError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "EngineHttpError";
+  }
+}
+
+/**
+ * Whether a failed request is worth retrying: an overload-type status, the
+ * engine's busy signal, or the connection itself failing — through a tunnel
+ * one dropped connection is a lost packet, not a dead engine. A sustained
+ * outage still surfaces: the submit backoff and the poll grace both run out.
+ */
+function isTransient(caught: unknown): boolean {
+  if (caught instanceof EngineHttpError) {
+    return TRANSIENT_STATUSES.has(caught.status) || isEngineBusy(caught.message);
+  }
+  const message = messageOf(caught);
+  return isEngineBusy(message) || message.includes("could not reach the comparison engine");
+}
 
 /** Whether a refusal was the engine's queue being full, rather than a fault. */
 function isEngineBusy(message: string): boolean {
@@ -100,6 +165,12 @@ export interface WaitForJobOptions {
   maxWaitMs?: number;
   /** Called with every non-terminal poll, for progress mirroring. */
   onProgress?: (job: EngineJob) => void;
+  /**
+   * Called by `compare` once the engine has accepted the job — the moment
+   * it holds its place in the engine's queue, and anything submitted after
+   * this line up behind it.
+   */
+  onSubmitted?: (jobId: string) => void;
 }
 
 /**
@@ -168,10 +239,9 @@ export class ComparisonEngineClient {
       try {
         return await this.submit(urls);
       } catch (caught) {
-        const message = messageOf(caught);
-        if (!isEngineBusy(message) || attempt >= SUBMIT_ATTEMPTS) throw caught;
+        if (!isTransient(caught) || attempt >= SUBMIT_ATTEMPTS) throw caught;
         this.logger.debug(
-          `Engine queue is full (attempt ${attempt}/${SUBMIT_ATTEMPTS}); waiting for room`,
+          `Engine not accepting work (attempt ${attempt}/${SUBMIT_ATTEMPTS}): ${messageOf(caught)}; retrying`,
         );
         await pause(SUBMIT_BACKOFF_MS, signal);
       }
@@ -193,12 +263,16 @@ export class ComparisonEngineClient {
   ): Promise<EngineJob> {
     const maxWaitMs = options.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
     const startedAt = Date.now();
-    let failures = 0;
+    /** When the current streak of failed polls began; null while polls succeed. */
+    let failingSince: number | null = null;
 
     for (;;) {
       // Throws an AbortError when the signal fires mid-sleep, which is the
       // "stopped by the caller" outcome and is left to propagate as such.
-      await pause(this.pollInterval(startedAt), options.signal);
+      await pause(
+        failingSince === null ? this.pollInterval(startedAt) : SLOW_POLL_MS,
+        options.signal,
+      );
 
       if (Date.now() - startedAt > maxWaitMs) {
         throw new Error(
@@ -209,15 +283,32 @@ export class ComparisonEngineClient {
       let job: EngineJob;
       try {
         job = await this.fetchJob(jobId);
-        failures = 0;
+        failingSince = null;
       } catch (caught) {
-        failures += 1;
-        if (failures < MAX_POLL_FAILURES) continue;
+        failingSince ??= Date.now();
+        if (Date.now() - failingSince < POLL_FAILURE_GRACE_MS) continue;
         throw caught;
       }
 
       if (isTerminal(job.status)) return job;
       options.onProgress?.(job);
+    }
+  }
+
+  /**
+   * Gets the engine to fingerprint `urls` now, for a job that will follow.
+   *
+   * Just a comparison whose result nobody reads: the engine has no
+   * fingerprint-only endpoint, and a two-URL job is the cheapest way to make
+   * it prepare a video. Never throws and never waits out a full queue —
+   * a warm-up that did not happen only means the real call is slower.
+   */
+  async warm(urls: string[], signal?: AbortSignal): Promise<void> {
+    try {
+      const jobId = await this.submit(urls);
+      await this.waitForJob(jobId, { signal, maxWaitMs: WARM_MAX_WAIT_MS });
+    } catch (caught) {
+      this.logger.debug(`Warm-up over ${urls.length} URLs did not finish: ${messageOf(caught)}`);
     }
   }
 
@@ -227,14 +318,15 @@ export class ComparisonEngineClient {
     options: WaitForJobOptions = {},
   ): Promise<{ jobId: string; job: EngineJob }> {
     const jobId = await this.submitWithBackoff(urls, options.signal);
+    options.onSubmitted?.(jobId);
     const job = await this.waitForJob(jobId, options);
     return { jobId, job };
   }
 
   /**
    * Fast at first, slower once the call is clearly not a quick one. The first
-   * seconds are when a small job finishes and when a broken one fails, so
-   * that is where the responsiveness is worth paying for.
+   * minute is where a cache-warm job finishes and where a broken one fails,
+   * so that is where the responsiveness is worth paying for.
    */
   private pollInterval(startedAt: number): number {
     return Date.now() - startedAt < FAST_POLL_WINDOW_MS
@@ -279,7 +371,8 @@ export class ComparisonEngineClient {
 
     if (!response.ok) {
       const detail = (await response.text().catch(() => "")).trim();
-      throw new Error(
+      throw new EngineHttpError(
+        response.status,
         `the comparison engine answered HTTP ${response.status}` +
           (detail.length > 0 ? `: ${detail.slice(0, 400)}` : ""),
       );

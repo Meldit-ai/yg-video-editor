@@ -51,13 +51,15 @@ describe("SubmissionTarget", () => {
     await expect(target.loadThreshold("cmp_1")).resolves.toBeNull();
   });
 
-  it("loads pending rows — unlabelled and unchecked — oldest first, with their engine URLs", async () => {
+  it("loads pending rows — unlabelled and unchecked — oldest first, with their engine URLs and content identity", async () => {
     submission.findMany.mockResolvedValueOnce([
-      { id: "s1", objectKey: "k1", createdAt: T0 },
+      { id: "s1", objectKey: "k1", createdAt: T0, contentSha256: "ab12" },
+      { id: "s2", objectKey: "k2", createdAt: T0, contentSha256: null },
     ]);
 
     await expect(target.loadPending("cmp_1")).resolves.toEqual([
-      { id: "s1", url: "https://bucket/k1", arrivedAt: T0 },
+      { id: "s1", url: "https://bucket/k1", arrivedAt: T0, identity: "sha256:ab12" },
+      { id: "s2", url: "https://bucket/k2", arrivedAt: T0, identity: undefined },
     ]);
     expect(submission.findMany).toHaveBeenCalledWith({
       where: {
@@ -66,7 +68,7 @@ describe("SubmissionTarget", () => {
         uniqueness: null,
         duplicationCheckedAt: null,
       },
-      select: { id: true, objectKey: true, createdAt: true },
+      select: { id: true, objectKey: true, createdAt: true, contentSha256: true },
       orderBy: { createdAt: "asc" },
     });
   });

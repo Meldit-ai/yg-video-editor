@@ -87,11 +87,13 @@ describe("video upload storage engine", () => {
 
     const { error, info } = await settled;
     expect(error).toBeNull();
-    // The size in the row is counted off the wire, not taken from the client.
+    // The size and digest in the row are measured off the wire, not taken
+    // from the client. 1024 zero bytes have a well-known SHA-256.
     expect(info).toEqual({
       objectKey: expect.stringMatching(
         /^campaigns\/cmp_1\/[0-9a-f-]{36}\.mp4$/,
       ),
+      sha256: "5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef",
       size: 1024,
     });
     expect(storage.startUpload).toHaveBeenCalledWith(
