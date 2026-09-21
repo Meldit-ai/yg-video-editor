@@ -44,9 +44,20 @@ describe("DashboardService.statsFor", () => {
     await service.statsFor(editor(500));
     expect(findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { editorId: "user_1", active: true },
+        where: { editorId: "user_1", active: true, source: "EDITOR" },
       }),
     );
+  });
+
+  /**
+   * The bug this exists for: reels adopted from the tracker carry an editorId
+   * too, so an editor's dashboard counted 149 videos against 99 actually
+   * handed in — and multiplied their rate card by the inflated number.
+   */
+  it("excludes reels adopted from the tracker", async () => {
+    const { service, findMany } = serviceWith([]);
+    await service.statsFor(editor(500));
+    expect(findMany.mock.calls[0]![0]!.where.source).toBe("EDITOR");
   });
 
   it("counts videos, duplicates and campaigns", async () => {
@@ -153,12 +164,21 @@ describe("DashboardService.adminStats", () => {
       uniqueness: Uniqueness | null;
       _count: { _all: number };
     }>;
+    byEditor?: Array<{
+      editorId: string;
+      uniqueness: Uniqueness | null;
+      _count: { _all: number };
+    }>;
     editorsByCampaign?: Array<{ campaignId: string; editorId: string }>;
+    shareStatuses?: Array<{ status: string; _count: { _all: number } }>;
+    runStatuses?: Array<{ status: string; _count: { _all: number } }>;
   }) {
+    // Order matters: the service issues the campaign-label grouping, then the
+    // per-editor grouping, then distinct editors per campaign.
     const groupBy = vi
       .fn()
-      // First call is the label grouping, second is distinct editors.
       .mockResolvedValueOnce(options.byLabel ?? [])
+      .mockResolvedValueOnce(options.byEditor ?? [])
       .mockResolvedValueOnce(options.editorsByCampaign ?? []);
     const prisma = {
       client: {
@@ -168,11 +188,17 @@ describe("DashboardService.adminStats", () => {
             .fn()
             .mockResolvedValue([{ id: "c1", title: "Traitors" }]),
         },
-        user: { count: vi.fn().mockResolvedValue(3) },
+        user: {
+          count: vi.fn().mockResolvedValue(3),
+          findMany: vi.fn().mockResolvedValue([{ id: "u1", name: "Ravi" }]),
+        },
         campaignRate: { count: vi.fn().mockResolvedValue(1) },
-        videoSubmission: {
-          groupBy,
-          findMany: vi.fn().mockResolvedValue([]),
+        videoSubmission: { groupBy },
+        vendorShareRecipient: {
+          groupBy: vi.fn().mockResolvedValue(options.shareStatuses ?? []),
+        },
+        videoComparison: {
+          groupBy: vi.fn().mockResolvedValue(options.runStatuses ?? []),
         },
       },
     } as unknown as PrismaService;
@@ -211,6 +237,66 @@ describe("DashboardService.adminStats", () => {
       duplicates: 64,
       editors: 1,
     });
+  });
+
+  it("rates an editor on what was checked, not on everything", async () => {
+    // Otherwise someone mid-run reads as less original than they are: the
+    // videos the engine has not reached yet would count against them.
+    const { service } = adminServiceWith({
+      byEditor: [
+        { editorId: "u1", uniqueness: Uniqueness.UNIQUE, _count: { _all: 3 } },
+        { editorId: "u1", uniqueness: Uniqueness.DUPLICATE, _count: { _all: 1 } },
+        { editorId: "u1", uniqueness: null, _count: { _all: 96 } },
+      ],
+    });
+    const stats = await service.adminStats();
+    expect(stats.perEditor[0]).toMatchObject({
+      editorName: "Ravi",
+      videos: 100,
+      unique: 3,
+      duplicates: 1,
+      // 3 of the 4 checked, not 3 of 100.
+      originalRate: 75,
+    });
+  });
+
+  it("reports no rate rather than zero when nothing is checked", async () => {
+    const { service } = adminServiceWith({
+      byEditor: [
+        { editorId: "u1", uniqueness: null, _count: { _all: 5 } },
+      ],
+    });
+    // Null, not 0: nobody has judged this editor's work yet, which is not
+    // the same as judging it and finding nothing original.
+    const result = await service.adminStats();
+    expect(result.perEditor[0]!.originalRate).toBeNull();
+  });
+
+  it("counts failures that want acting on", async () => {
+    const { service } = adminServiceWith({
+      shareStatuses: [
+        { status: "SENT", _count: { _all: 11 } },
+        { status: "FAILED", _count: { _all: 12 } },
+      ],
+      runStatuses: [
+        { status: "FAILED", _count: { _all: 19 } },
+        { status: "SUCCEEDED", _count: { _all: 4 } },
+      ],
+    });
+    const result = await service.adminStats();
+    expect(result.attention).toEqual({
+      failedShares: 12,
+      totalShareRecipients: 23,
+      failedRuns: 19,
+      succeededRuns: 4,
+    });
+  });
+
+  it("reports zero for a status that never occurred", async () => {
+    const { service } = adminServiceWith({ shareStatuses: [], runStatuses: [] });
+    const result = await service.adminStats();
+    expect(result.attention.failedShares).toBe(0);
+    expect(result.attention.succeededRuns).toBe(0);
   });
 
   it("counts distinct editors, not their rows", async () => {

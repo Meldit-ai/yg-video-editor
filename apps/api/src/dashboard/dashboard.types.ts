@@ -80,14 +80,35 @@ export interface AdminDashboardStats {
   pendingRates: number;
   /** Campaigns by size, largest first. */
   perCampaign: AdminCampaignStat[];
-  recent: {
-    submissionId: string;
-    campaignId: string;
-    campaignTitle: string;
-    fileName: string;
+
+  /**
+   * How each editor's work is landing. The number an admin is really asking
+   * for is what share of someone's hand-ins is original, which a raw count of
+   * videos cannot answer.
+   */
+  perEditor: {
+    editorId: string;
     editorName: string;
-    uniqueness: "UNIQUE" | "PARTIAL" | "DUPLICATE" | null;
-    duplicationScore: number | null;
-    createdAt: string;
+    videos: number;
+    unique: number;
+    duplicates: number;
+    /** Unique as a share of what was checked. Null when nothing has been. */
+    originalRate: number | null;
   }[];
+
+  /**
+   * Things that are failing, and so want attention.
+   *
+   * Both are counted because a number nobody can act on is decoration: a
+   * failed vendor send means work did not reach the vendor, and a failed
+   * comparison run means videos are sitting unchecked.
+   */
+  attention: {
+    /** Vendor sends that never arrived. */
+    failedShares: number;
+    totalShareRecipients: number;
+    /** Comparison runs that ended FAILED, against those that succeeded. */
+    failedRuns: number;
+    succeededRuns: number;
+  };
 }

@@ -6,18 +6,17 @@ import {
   IndianRupeeIcon,
   LayersIcon,
   SparklesIcon,
+  TriangleAlertIcon,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 
 import { EmptyState } from "@/components/empty-state"
 import { MetaDivider, PageHeader } from "@/components/page-header"
 import { ProfileCard } from "@/components/profile-card"
-import { UniquenessBadge } from "@/components/status-badge"
 import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { errorMessage } from "@/hooks/use-collection"
 import { api } from "@/lib/api"
-import { relativeTime } from "@/lib/format"
 import type { AdminDashboardStats } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
@@ -113,23 +112,34 @@ function AdminDashboard({ stats }: { stats: AdminDashboardStats }) {
           }
           to="/campaigns"
         />
+        {/* The rate leads, not the count. "34 unique" means nothing without
+            what it is out of; "35% original" is the number an admin can judge
+            a campaign on, with the counts underneath for the detail. */}
         <Stat
           icon={SparklesIcon}
-          label="Unique"
-          value={String(stats.unique)}
+          label="Original work"
+          value={duplicateRate === null ? "—" : `${100 - duplicateRate}%`}
           hint={
             duplicateRate === null
               ? "Nothing checked yet"
-              : `${100 - duplicateRate}% of checked`
+              : `${stats.unique} of ${stats.unique + stats.duplicates} checked`
           }
-          tone="success"
+          tone={
+            duplicateRate === null
+              ? "default"
+              : duplicateRate > 50
+                ? "warning"
+                : "success"
+          }
         />
         <Stat
           icon={CopyCheckIcon}
-          label="Duplicate"
+          label="Duplicates found"
           value={String(stats.duplicates)}
           hint={
-            duplicateRate === null ? undefined : `${duplicateRate}% of checked`
+            duplicateRate === null
+              ? undefined
+              : `${duplicateRate}% of what was checked`
           }
           tone={stats.duplicates > 0 ? "warning" : "default"}
         />
@@ -158,13 +168,12 @@ function AdminDashboard({ stats }: { stats: AdminDashboardStats }) {
             <div className="flex items-center justify-between gap-4 bg-muted/30 px-4 py-2 text-[11px] tracking-wide text-muted-foreground uppercase">
               <span className="min-w-0 flex-1">Campaign</span>
               <span className="w-20 shrink-0 text-right">Editors</span>
-              <span className="w-20 shrink-0 text-right">Videos</span>
-              <span className="flex w-36 shrink-0 items-center justify-end gap-2">
+              <span className="flex w-44 shrink-0 items-center justify-end gap-1.5">
                 <span className="text-success">Unique</span>
                 <span aria-hidden className="text-border">
                   /
                 </span>
-                <span>Dupe</span>
+                <span>Duplicate</span>
               </span>
             </div>
             {stats.perCampaign.map((row) => (
@@ -181,13 +190,10 @@ function AdminDashboard({ stats }: { stats: AdminDashboardStats }) {
                 <span className="numeric w-20 shrink-0 text-right text-[13px] text-muted-foreground">
                   {row.editors}
                 </span>
-                <Link
-                  to={`/campaigns/${row.campaignId}/feed`}
-                  className="numeric w-20 shrink-0 rounded text-right text-[13px] text-muted-foreground outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
-                >
-                  {row.videos}
-                </Link>
-                <span className="numeric flex w-36 shrink-0 items-center justify-end gap-2 text-[13px]">
+                {/* The split and the total on one line: "34 / 64 of 99"
+                    answers "how much, and how much of it is original" without
+                    the reader holding two columns in their head. */}
+                <span className="numeric flex w-44 shrink-0 items-baseline justify-end gap-1.5 text-[13px]">
                   <span className="text-success">{row.unique}</span>
                   <span aria-hidden className="text-border">
                     /
@@ -201,6 +207,17 @@ function AdminDashboard({ stats }: { stats: AdminDashboardStats }) {
                   >
                     {row.duplicates}
                   </span>
+                  <span className="text-[12px] text-muted-foreground">
+                    of {row.videos}
+                  </span>
+                  {row.unchecked > 0 && (
+                    <span
+                      className="text-[12px] text-muted-foreground"
+                      title={`${row.unchecked} not checked yet`}
+                    >
+                      ({row.unchecked}?)
+                    </span>
+                  )}
                 </span>
               </div>
             ))}
@@ -211,50 +228,125 @@ function AdminDashboard({ stats }: { stats: AdminDashboardStats }) {
       <section className="space-y-3">
         <div className="flex items-center gap-3">
           <h2 className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
-            Latest hand-ins
+            By editor
           </h2>
           <span aria-hidden className="h-px flex-1 bg-border" />
         </div>
 
-        {stats.recent.length === 0 ? (
+        {stats.perEditor.length === 0 ? (
           <EmptyState
             icon={ClapperboardIcon}
             title="Nothing handed in yet"
-            description="Videos editors submit against a brief will appear here."
+            description="Once editors submit against a brief, how their work is landing shows up here."
           />
         ) : (
           <Card className="overflow-hidden py-0">
             <CardContent className="divide-y p-0">
-              {stats.recent.map((row) => (
-                <Link
-                  key={row.submissionId}
-                  to={`/campaigns/${row.campaignId}/feed`}
-                  className="flex items-center gap-3 px-4 py-2.5 transition-colors hover:bg-muted/40"
+              <div className="flex items-center justify-between gap-4 bg-muted/30 px-4 py-2 text-[11px] tracking-wide text-muted-foreground uppercase">
+                <span className="min-w-0 flex-1">Editor</span>
+                <span className="w-20 shrink-0 text-right">Videos</span>
+                <span className="w-36 shrink-0 text-right">Original</span>
+              </div>
+              {stats.perEditor.map((row) => (
+                <div
+                  key={row.editorId}
+                  className="flex items-center justify-between gap-4 px-4 py-3"
                 >
-                  <span
-                    className="min-w-0 flex-1 truncate text-[13px]"
-                    title={row.fileName}
-                  >
-                    {row.fileName}
-                  </span>
-                  <span className="hidden shrink-0 text-[12px] text-muted-foreground sm:inline">
+                  <span className="min-w-0 flex-1 truncate text-[14px]">
                     {row.editorName}
                   </span>
-                  <UniquenessBadge
-                    uniqueness={row.uniqueness}
-                    value={row.duplicationScore}
-                    pendingLabel="Checking"
-                    className="shrink-0"
-                  />
-                  <span className="numeric w-16 shrink-0 text-right text-[12px] text-muted-foreground">
-                    {relativeTime(row.createdAt)}
+                  <span className="numeric w-20 shrink-0 text-right text-[13px] text-muted-foreground">
+                    {row.videos}
                   </span>
-                </Link>
+                  {/* The bar is the point: a percentage on its own does not
+                      show how one editor compares to the next at a glance. */}
+                  <span className="flex w-36 shrink-0 items-center justify-end gap-2">
+                    {row.originalRate === null ? (
+                      <span className="text-[12px] text-muted-foreground">
+                        Not checked
+                      </span>
+                    ) : (
+                      <>
+                        <span
+                          aria-hidden
+                          className="h-1.5 w-16 overflow-hidden rounded-full bg-muted"
+                        >
+                          <span
+                            className={cn(
+                              "block h-full rounded-full",
+                              row.originalRate >= 50
+                                ? "bg-success"
+                                : "bg-warning",
+                            )}
+                            style={{ width: `${row.originalRate}%` }}
+                          />
+                        </span>
+                        <span className="numeric w-10 text-right text-[13px]">
+                          {row.originalRate}%
+                        </span>
+                      </>
+                    )}
+                  </span>
+                </div>
               ))}
             </CardContent>
           </Card>
         )}
+        <p className="text-[12px] text-muted-foreground">
+          Original is unique videos as a share of those checked, so an editor
+          mid-run is not marked down for work the engine has not reached.
+        </p>
       </section>
+
+      {/* Only rendered when something is actually wrong: a panel that always
+          says "0 failed" trains people to stop reading it. */}
+      {(stats.attention.failedShares > 0 || stats.attention.failedRuns > 0) && (
+        <section className="space-y-3">
+          <div className="flex items-center gap-3">
+            <h2 className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+              Needs attention
+            </h2>
+            <span aria-hidden className="h-px flex-1 bg-border" />
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            {stats.attention.failedShares > 0 && (
+              <Card className="py-0">
+                <CardContent className="flex items-start gap-3 p-4">
+                  <TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-warning" />
+                  <div className="min-w-0">
+                    <p className="text-[13px] font-medium">
+                      {stats.attention.failedShares} of{" "}
+                      {stats.attention.totalShareRecipients} vendor sends failed
+                    </p>
+                    <p className="text-[12px] text-muted-foreground">
+                      Those vendors never received the videos. Usually an
+                      unreachable number or an expired WhatsApp token.
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+            {stats.attention.failedRuns > 0 && (
+              <Card className="py-0">
+                <CardContent className="flex items-start gap-3 p-4">
+                  <TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-warning" />
+                  <div className="min-w-0">
+                    <p className="text-[13px] font-medium">
+                      {stats.attention.failedRuns} duplicate checks failed
+                    </p>
+                    <p className="text-[12px] text-muted-foreground">
+                      {stats.attention.succeededRuns} succeeded. Videos in a
+                      failed run stay unchecked until the next one reaches them.
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+        </section>
+      )}
+
     </div>
   )
 }

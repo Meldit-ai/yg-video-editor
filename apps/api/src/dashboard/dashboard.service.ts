@@ -21,7 +21,15 @@ export class DashboardService {
    */
   async statsFor(user: AuthenticatedUser): Promise<EditorDashboardStats> {
     const rows = await this.prisma.client.videoSubmission.findMany({
-      where: { editorId: user.id, active: true },
+      where: {
+        editorId: user.id,
+        active: true,
+        // Hand-ins only. Reels adopted from the tracker carry an editorId too,
+        // so without this an editor was credited with work they never
+        // submitted — 149 videos against 99 actually handed in — and their
+        // estimated earnings were inflated by the same 50.
+        source: SubmissionSource.EDITOR,
+      },
       select: {
         campaignId: true,
         duplicationScore: true,
@@ -118,7 +126,9 @@ export class DashboardService {
       pendingRates,
       byLabel,
       campaigns,
-      recentRows,
+      byEditor,
+      shareRecipients,
+      runStatuses,
     ] = await Promise.all([
       this.prisma.client.campaign.count({ where: { active: true } }),
       this.prisma.client.user.count({
@@ -135,20 +145,19 @@ export class DashboardService {
         where: { active: true },
         select: { id: true, title: true },
       }),
-      this.prisma.client.videoSubmission.findMany({
+      // Per editor, per label: three numbers each, not a row per video.
+      this.prisma.client.videoSubmission.groupBy({
+        by: ["editorId", "uniqueness"],
         where: editorWork,
-        orderBy: { createdAt: "desc" },
-        take: 8,
-        select: {
-          id: true,
-          campaignId: true,
-          fileName: true,
-          uniqueness: true,
-          duplicationScore: true,
-          createdAt: true,
-          campaign: { select: { title: true } },
-          editor: { select: { name: true } },
-        },
+        _count: { _all: true },
+      }),
+      this.prisma.client.vendorShareRecipient.groupBy({
+        by: ["status"],
+        _count: { _all: true },
+      }),
+      this.prisma.client.videoComparison.groupBy({
+        by: ["status"],
+        _count: { _all: true },
       }),
     ]);
 
@@ -203,6 +212,50 @@ export class DashboardService {
       perCampaign.set(row.campaignId, stat);
     }
 
+    // Names for the editors who actually have work, rather than every user.
+    const editorIds = [...new Set(byEditor.map((row) => row.editorId))];
+    const editorNames = await this.prisma.client.user.findMany({
+      where: { id: { in: editorIds } },
+      select: { id: true, name: true },
+    });
+    const nameById = new Map(editorNames.map((row) => [row.id, row.name]));
+
+    const editorStats = new Map<
+      string,
+      { videos: number; unique: number; duplicates: number }
+    >();
+    for (const row of byEditor) {
+      const stat = editorStats.get(row.editorId) ?? {
+        videos: 0,
+        unique: 0,
+        duplicates: 0,
+      };
+      stat.videos += row._count._all;
+      if (row.uniqueness === Uniqueness.DUPLICATE) {
+        stat.duplicates += row._count._all;
+      } else if (row.uniqueness === Uniqueness.UNIQUE) {
+        stat.unique += row._count._all;
+      }
+      editorStats.set(row.editorId, stat);
+    }
+
+    const perEditor = [...editorStats.entries()]
+      .map(([editorId, stat]) => {
+        const checked = stat.unique + stat.duplicates;
+        return {
+          editorId,
+          editorName: nameById.get(editorId) ?? "Unknown editor",
+          videos: stat.videos,
+          unique: stat.unique,
+          duplicates: stat.duplicates,
+          // Out of what was checked, not out of everything handed in: an
+          // editor mid-run would otherwise read as less original than they are.
+          originalRate:
+            checked === 0 ? null : Math.round((stat.unique / checked) * 100),
+        };
+      })
+      .sort((left, right) => right.videos - left.videos);
+
     return {
       activeCampaigns,
       editors,
@@ -214,18 +267,26 @@ export class DashboardService {
       perCampaign: [...perCampaign.values()].sort(
         (left, right) => right.videos - left.videos,
       ),
-      recent: recentRows.map((row) => ({
-        submissionId: row.id,
-        campaignId: row.campaignId,
-        campaignTitle: row.campaign.title,
-        fileName: row.fileName,
-        editorName: row.editor.name,
-        uniqueness: row.uniqueness,
-        duplicationScore: row.duplicationScore,
-        createdAt: row.createdAt.toISOString(),
-      })),
+      perEditor,
+      attention: {
+        failedShares: countOf(shareRecipients, "FAILED"),
+        totalShareRecipients: shareRecipients.reduce(
+          (total, row) => total + row._count._all,
+          0,
+        ),
+        failedRuns: countOf(runStatuses, "FAILED"),
+        succeededRuns: countOf(runStatuses, "SUCCEEDED"),
+      },
     };
   }
+}
+
+/** One status out of a groupBy, or zero when it never occurred. */
+function countOf(
+  rows: readonly { status: string; _count: { _all: number } }[],
+  status: string,
+): number {
+  return rows.find((row) => row.status === status)?._count._all ?? 0;
 }
 
 function round1(value: number): number {

@@ -623,14 +623,19 @@ export interface AdminDashboardStats {
   unchecked: number
   pendingRates: number
   perCampaign: AdminCampaignStat[]
-  recent: {
-    submissionId: string
-    campaignId: string
-    campaignTitle: string
-    fileName: string
+  perEditor: {
+    editorId: string
     editorName: string
-    uniqueness: Uniqueness | null
-    duplicationScore: number | null
-    createdAt: string
+    videos: number
+    unique: number
+    duplicates: number
+    /** Unique as a share of what was checked. Null when nothing has been. */
+    originalRate: number | null
   }[]
+  attention: {
+    failedShares: number
+    totalShareRecipients: number
+    failedRuns: number
+    succeededRuns: number
+  }
 }
