@@ -103,6 +103,8 @@ export class WhatsAppClient {
     to: string,
     body: string,
   ): Promise<WhatsAppSendResult> {
+    // `expectStatus` stays false: a delivered text reports no status at all,
+    // so requiring one would call every successful send a failure.
     return this.post(to, {
       type: "text",
       // Renders the first link as a card, which is the point of sharing videos.
@@ -135,6 +137,8 @@ export class WhatsAppClient {
   private async post(
     to: string,
     payload: Record<string, unknown>,
+    /** Whether Meta reports a status for this kind of message. */
+    expectStatus = false,
   ): Promise<WhatsAppSendResult> {
     const config = this.config;
     if (config === null) {
@@ -181,7 +185,7 @@ export class WhatsAppClient {
       );
     }
 
-    const message = readMessage(parsed);
+    const message = readMessage(parsed, expectStatus);
     if (message === null) {
       // A 200 with no id is not a send we can track; treat it as a failure
       // rather than recording a message nobody can follow up.
@@ -236,6 +240,8 @@ function readError(payload: unknown): { message: string; code: number | null } {
 
 function readMessage(
   payload: unknown,
+  /** Templates report their status; free-form text does not. See below. */
+  expectStatus: boolean,
 ): { id: string; accepted: boolean } | null {
   if (typeof payload !== "object" || payload === null) return null;
   const { messages } = payload as { messages?: unknown };
@@ -244,13 +250,19 @@ function readMessage(
   if (typeof first.id !== "string") return null;
   return {
     id: first.id,
-    // A 200 with a message id is an accepted send. `message_status` is absent
-    // from ordinary successful responses — verified against the live API — so
-    // requiring it treated every delivered message as a silent drop and sent
-    // the fallback template on top of a text the vendor had already received.
+    // Measured against the live API, repeatedly, on a number whose 24-hour
+    // window was shut: a text comes back with an id and NO `message_status`
+    // and is never delivered, while a template to the same number in the same
+    // second comes back "accepted". So the field answers the question only for
+    // the kind of message that sets it.
     //
-    // The one value that does mean "taken but not delivered" is "held", for a
-    // message Meta is holding rather than sending on.
-    accepted: first.message_status !== "held",
+    // Reading an absent status as delivery is what let a share vanish: the
+    // text was dropped, the client called it sent, and the template fallback
+    // that would have landed never ran. Reading it as failure for a template
+    // is what sent two messages. Hence the distinction by kind rather than a
+    // single rule for both.
+    accepted: expectStatus
+      ? first.message_status === "accepted"
+      : first.message_status !== "held",
   };
 }

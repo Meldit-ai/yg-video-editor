@@ -19,15 +19,21 @@ describe("templateLinks", () => {
     for (const link of LINKS) expect(text).toContain(link);
   });
 
-  it("separates them with spaces, because a newline is refused", () => {
+  it("numbers them, so several links read as a list", () => {
+    expect(templateLinks(LINKS)).toBe(
+      `1) ${LINKS[0]}   2) ${LINKS[1]}   3) ${LINKS[2]}`,
+    );
+  });
+
+  it("never uses a newline, which the template refuses", () => {
     // Checked against the live API: spaces are accepted, and the same text
     // with a newline comes back as "(#132018) There is an issue with the
     // parameters in your template".
     expect(templateLinks(LINKS)).not.toContain("\n");
-    expect(templateLinks(LINKS)).toBe(LINKS.join(" "));
   });
 
-  it("handles a single video without a trailing separator", () => {
+  it("leaves a lone link unnumbered", () => {
+    // "1)" in front of a single link reads as though something is missing.
     expect(templateLinks([LINKS[0]!])).toBe(LINKS[0]);
   });
 

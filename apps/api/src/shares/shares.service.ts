@@ -338,29 +338,27 @@ export class SharesService {
       attempts: number;
     },
   ): Promise<void> {
-    let usedTemplate = false;
+    // Always the template, never the typed text.
+    //
+    // A free-form message only reaches a vendor who wrote to us in the last 24
+    // hours, and Meta's reply cannot tell us whether this one did: measured
+    // repeatedly against the live API, a dropped text and a delivered text
+    // come back identical — an id, and no status at all — while a template to
+    // the same number in the same second reports "accepted".
+    //
+    // So trying the text first is a coin toss with no way to see the result.
+    // Reading its silence as success loses the share; reading it as failure
+    // sends the vendor two messages. The template lands either way, carries
+    // every link, and says so.
+    const usedTemplate = true;
 
     try {
-      let result;
-      try {
-        result = await this.whatsapp.sendText(waNumber, body);
-      } catch (caught) {
-        // The typed message only reaches a vendor who wrote to us in the last
-        // 24 hours. Outside it Meta either refuses the send outright or — more
-        // often — takes it and silently drops it, so both shapes mean the same
-        // thing: fall back to the approved template, which always lands.
-        const outsideWindow =
-          caught instanceof WhatsAppNotDeliverable ||
-          (caught instanceof WhatsAppError && isOutsideWindow(caught));
-        if (!outsideWindow) throw caught;
-        usedTemplate = true;
-        result = await this.sendTemplateInAnyLanguage(waNumber, [
-          context.vendorName,
-          String(context.videoCount),
-          context.campaignTitle,
-          templateLinks(context.links),
-        ]);
-      }
+      const result = await this.sendTemplateInAnyLanguage(waNumber, [
+        context.vendorName,
+        String(context.videoCount),
+        context.campaignTitle,
+        templateLinks(context.links),
+      ]);
 
       await this.prisma.client.vendorShareRecipient.update({
         where: { id: recipientId },
@@ -426,7 +424,11 @@ function isOutsideWindow(error: WhatsAppError): boolean {
  * — and which path runs is invisible to the admin, so it read as intermittent.
  */
 export function templateLinks(links: readonly string[]): string {
-  return links.join(" ");
+  // Numbered and spaced apart, so several links read as a list rather than one
+  // run-on line. A single link is left bare — "1)" in front of one link reads
+  // as though something is missing.
+  if (links.length <= 1) return links[0] ?? "";
+  return links.map((link, index) => `${index + 1}) ${link}`).join("   ");
 }
 
 /**
