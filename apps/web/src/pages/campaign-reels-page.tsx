@@ -473,7 +473,9 @@ function ReelCard({
           <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
             @{reel.username}
           </span>
-          <ScoreBadge reel={reel} />
+          {/* `derivedFrom`, not the uniqueness label: what decides the word is
+              where the card sits, and only a child card is given one. */}
+          <ScoreBadge reel={reel} isCopy={derivedFrom !== undefined} />
         </div>
 
         {derivedFrom !== undefined && (
@@ -512,7 +514,7 @@ function ReelCard({
         {reel.originalUsername !== null && (
           <span className="inline-flex items-center gap-1 text-[12px] text-[var(--warning)]">
             <CopyIcon className="size-3" />
-            {isCopy ? "copy of" : "partly matches"} @{reel.originalUsername}
+            copy of @{reel.originalUsername}
           </span>
         )}
       </div>
@@ -526,14 +528,21 @@ function ReelCard({
  * the data does not support. "Unreadable" is a reel the engine could not
  * fetch or decode — checked, but with nothing to say.
  */
-function ScoreBadge({ reel }: { reel: CampaignReel }) {
+function ScoreBadge({
+  reel,
+  isCopy = false,
+}: {
+  reel: CampaignReel
+  /** Whether this reel is listed under the one it was measured against. */
+  isCopy?: boolean
+}) {
   return (
     <UniquenessBadge
       uniqueness={reel.uniqueness}
       value={reel.duplicationScore}
-      // Two labels on this page, not three: a PARTIAL heads its own group
-      // exactly as a UNIQUE does. Its percentage still shows.
-      partialAsOriginal
+      // Two labels on this page, not three: a PARTIAL wears whichever word
+      // matches its place in the group. Its percentage still shows.
+      partialAs={isCopy ? "DUPLICATE" : "UNIQUE"}
       pendingLabel={reel.checkedAt === null ? "Not checked" : "Unreadable"}
       className="shrink-0"
     />

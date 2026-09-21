@@ -168,7 +168,7 @@ export function UniquenessBadge({
   uniqueness,
   value,
   pendingLabel = "Not checked",
-  partialAsOriginal = false,
+  partialAs = "PARTIAL",
   className,
 }: {
   uniqueness: Uniqueness | null
@@ -176,14 +176,15 @@ export function UniquenessBadge({
   value?: number | null
   pendingLabel?: string
   /**
-   * Show a PARTIAL as an original, keeping its percentage.
+   * What word a PARTIAL wears.
    *
-   * For views that group by what a video was measured against: a PARTIAL heads
-   * its own group exactly as a UNIQUE does, and a third word on the row invites
-   * a judgement the grouping already makes. The value still shows, because how
+   * Grouped views say two things only — this video, and the ones taken from
+   * it — so a PARTIAL borrows whichever word fits its place: "Unique" when it
+   * heads a group, "Duplicate" when it sits under one. A third word invites a
+   * judgement the grouping already makes. Its percentage is unaffected: how
    * partial it is stays the useful part.
    */
-  partialAsOriginal?: boolean
+  partialAs?: Uniqueness
   className?: string
 }) {
   if (uniqueness === null) {
@@ -200,8 +201,7 @@ export function UniquenessBadge({
       </span>
     )
   }
-  const shown =
-    partialAsOriginal && uniqueness === "PARTIAL" ? "UNIQUE" : uniqueness
+  const shown = uniqueness === "PARTIAL" ? partialAs : uniqueness
   const style = UNIQUENESS[shown]
   // The percentage follows the real label, not the shown one: a PARTIAL
   // displayed as an original still says how partial it is.
