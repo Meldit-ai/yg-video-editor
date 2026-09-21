@@ -119,12 +119,24 @@ function Dashboard({ stats }: { stats: EditorDashboardStats }) {
               : `${stats.uncheckedCount} not checked yet`
           }
         />
+        {/* The rate leads: "34 unique" means nothing without what it is out
+            of, and the share of checked work is what an editor is judged on. */}
         <Stat
           icon={SparklesIcon}
-          label="Unique"
-          value={String(stats.uniqueCount)}
-          hint={uniqueRate === null ? "Nothing checked yet" : `${uniqueRate}% of checked`}
-          tone={uniqueRate !== null && uniqueRate === 100 ? "success" : "default"}
+          label="Original work"
+          value={uniqueRate === null ? "—" : `${uniqueRate}%`}
+          hint={
+            uniqueRate === null
+              ? "Nothing checked yet"
+              : `${stats.uniqueCount} of ${checked} checked`
+          }
+          tone={
+            uniqueRate === null
+              ? "default"
+              : uniqueRate >= 50
+                ? "success"
+                : "warning"
+          }
         />
         <Stat
           icon={CopyCheckIcon}
@@ -137,19 +149,17 @@ function Dashboard({ stats }: { stats: EditorDashboardStats }) {
           }
           tone={stats.duplicateCount > 0 ? "warning" : "default"}
         />
+        {/* Not "average duplicacy": a mean across unique and duplicate
+            videos alike is a number nobody can act on. How many briefs the
+            editor is working against is something they recognise. */}
         <Stat
           icon={LayersIcon}
-          label="Average duplicacy"
-          // Null means nothing has been compared yet — not 0%.
-          value={
-            stats.averageDuplicationScore === null
-              ? "—"
-              : `${stats.averageDuplicationScore}%`
-          }
+          label="Campaigns"
+          value={String(stats.campaignsContributed)}
           hint={
             stats.averageDuplicationScore === null
-              ? "Nothing checked yet"
-              : undefined
+              ? undefined
+              : `${stats.averageDuplicationScore}% average match`
           }
         />
         <Stat
@@ -348,8 +358,10 @@ function Stat({
 
 function StatSkeletons() {
   return (
-    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-      {[0, 1, 2, 3].map((index) => (
+    // Five, matching the cards it stands in for: a skeleton of a different
+    // shape makes the page jump when the data lands.
+    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+      {[0, 1, 2, 3, 4].map((index) => (
         <Card key={index} className="py-0">
           <CardContent className="flex flex-col gap-2.5 p-4">
             <Skeleton className="h-3 w-24" />

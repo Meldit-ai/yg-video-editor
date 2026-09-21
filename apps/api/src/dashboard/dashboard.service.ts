@@ -127,8 +127,7 @@ export class DashboardService {
       byLabel,
       campaigns,
       byEditor,
-      shareRecipients,
-      runStatuses,
+      duplicateClusters,
     ] = await Promise.all([
       this.prisma.client.campaign.count({ where: { active: true } }),
       this.prisma.client.user.count({
@@ -151,12 +150,10 @@ export class DashboardService {
         where: editorWork,
         _count: { _all: true },
       }),
-      this.prisma.client.vendorShareRecipient.groupBy({
-        by: ["status"],
-        _count: { _all: true },
-      }),
-      this.prisma.client.videoComparison.groupBy({
-        by: ["status"],
+      // Duplicates grouped by what they copied: one row per repeated cut.
+      this.prisma.client.videoSubmission.groupBy({
+        by: ["topMatchSubmissionId"],
+        where: { ...editorWork, uniqueness: Uniqueness.DUPLICATE },
         _count: { _all: true },
       }),
     ]);
@@ -256,6 +253,65 @@ export class DashboardService {
       })
       .sort((left, right) => right.videos - left.videos);
 
+    // Only clusters with a real parent count: a DUPLICATE with no
+    // topMatchSubmissionId was labelled before the parent was recorded.
+    const clusters = duplicateClusters
+      .filter((row) => row.topMatchSubmissionId !== null)
+      .sort((left, right) => right._count._all - left._count._all);
+
+    const worstId = clusters[0]?.topMatchSubmissionId ?? null;
+    const worstParent =
+      worstId === null
+        ? null
+        : await this.prisma.client.videoSubmission.findUnique({
+            where: { id: worstId },
+            select: {
+              id: true,
+              campaignId: true,
+              fileName: true,
+              campaign: { select: { title: true } },
+            },
+          });
+
+    const repetition = {
+      clusters: clusters.length,
+      repeatedVideos: clusters.reduce((sum, row) => sum + row._count._all, 0),
+      worst:
+        worstParent === null || clusters[0] === undefined
+          ? null
+          : {
+              submissionId: worstParent.id,
+              campaignId: worstParent.campaignId,
+              campaignTitle: worstParent.campaign.title,
+              fileName: worstParent.fileName,
+              copies: clusters[0]._count._all,
+            },
+    };
+
+    // The latest run per campaign, rather than every run ever: a failure from
+    // a dev restart three days ago is not something anyone can act on today.
+    const health = await Promise.all(
+      campaigns.map(async (campaign) => {
+        const [lastRun, unchecked] = await Promise.all([
+          this.prisma.client.videoComparison.findFirst({
+            where: { campaignId: campaign.id },
+            orderBy: { createdAt: "desc" },
+            select: { status: true, createdAt: true },
+          }),
+          this.prisma.client.videoSubmission.count({
+            where: { ...editorWork, campaignId: campaign.id, uniqueness: null },
+          }),
+        ]);
+        return {
+          campaignId: campaign.id,
+          campaignTitle: campaign.title,
+          lastRunStatus: lastRun?.status ?? null,
+          lastRunAt: lastRun?.createdAt.toISOString() ?? null,
+          unchecked,
+        };
+      }),
+    );
+
     return {
       activeCampaigns,
       editors,
@@ -268,25 +324,10 @@ export class DashboardService {
         (left, right) => right.videos - left.videos,
       ),
       perEditor,
-      attention: {
-        failedShares: countOf(shareRecipients, "FAILED"),
-        totalShareRecipients: shareRecipients.reduce(
-          (total, row) => total + row._count._all,
-          0,
-        ),
-        failedRuns: countOf(runStatuses, "FAILED"),
-        succeededRuns: countOf(runStatuses, "SUCCEEDED"),
-      },
+      repetition,
+      health,
     };
   }
-}
-
-/** One status out of a groupBy, or zero when it never occurred. */
-function countOf(
-  rows: readonly { status: string; _count: { _all: number } }[],
-  status: string,
-): number {
-  return rows.find((row) => row.status === status)?._count._all ?? 0;
 }
 
 function round1(value: number): number {

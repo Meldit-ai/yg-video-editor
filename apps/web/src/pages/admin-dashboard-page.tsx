@@ -6,7 +6,6 @@ import {
   IndianRupeeIcon,
   LayersIcon,
   SparklesIcon,
-  TriangleAlertIcon,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 
@@ -17,6 +16,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { errorMessage } from "@/hooks/use-collection"
 import { api } from "@/lib/api"
+import { relativeTime } from "@/lib/format"
 import type { AdminDashboardStats } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
@@ -132,16 +132,19 @@ function AdminDashboard({ stats }: { stats: AdminDashboardStats }) {
                 : "success"
           }
         />
+        {/* The cluster count, not the duplicate count. 64 duplicates sounds
+            like 64 problems; 13 repeated cuts is the number of conversations
+            actually worth having. */}
         <Stat
           icon={CopyCheckIcon}
-          label="Duplicates found"
-          value={String(stats.duplicates)}
+          label="Repeated cuts"
+          value={String(stats.repetition.clusters)}
           hint={
-            duplicateRate === null
-              ? undefined
-              : `${duplicateRate}% of what was checked`
+            stats.repetition.clusters === 0
+              ? "Nothing handed in twice"
+              : `${stats.repetition.repeatedVideos} videos between them`
           }
-          tone={stats.duplicates > 0 ? "warning" : "default"}
+          tone={stats.repetition.clusters > 0 ? "warning" : "default"}
         />
         {/* A number worth acting on rather than only reading, so it links to
             where the acting happens. */}
@@ -298,54 +301,119 @@ function AdminDashboard({ stats }: { stats: AdminDashboardStats }) {
         </p>
       </section>
 
-      {/* Only rendered when something is actually wrong: a panel that always
-          says "0 failed" trains people to stop reading it. */}
-      {(stats.attention.failedShares > 0 || stats.attention.failedRuns > 0) && (
+      {/* The single most-repeated cut, named. A number cannot start a
+          conversation with an editor; a filename and a count can. */}
+      {stats.repetition.worst !== null && (
         <section className="space-y-3">
           <div className="flex items-center gap-3">
             <h2 className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
-              Needs attention
+              Most repeated
             </h2>
             <span aria-hidden className="h-px flex-1 bg-border" />
           </div>
-
-          <div className="grid gap-3 sm:grid-cols-2">
-            {stats.attention.failedShares > 0 && (
-              <Card className="py-0">
-                <CardContent className="flex items-start gap-3 p-4">
-                  <TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-warning" />
-                  <div className="min-w-0">
-                    <p className="text-[13px] font-medium">
-                      {stats.attention.failedShares} of{" "}
-                      {stats.attention.totalShareRecipients} vendor sends failed
-                    </p>
-                    <p className="text-[12px] text-muted-foreground">
-                      Those vendors never received the videos. Usually an
-                      unreachable number or an expired WhatsApp token.
-                    </p>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-            {stats.attention.failedRuns > 0 && (
-              <Card className="py-0">
-                <CardContent className="flex items-start gap-3 p-4">
-                  <TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-warning" />
-                  <div className="min-w-0">
-                    <p className="text-[13px] font-medium">
-                      {stats.attention.failedRuns} duplicate checks failed
-                    </p>
-                    <p className="text-[12px] text-muted-foreground">
-                      {stats.attention.succeededRuns} succeeded. Videos in a
-                      failed run stay unchecked until the next one reaches them.
-                    </p>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-          </div>
+          <Card className="py-0 transition-colors hover:border-ring">
+            <Link
+              to={`/campaigns/${stats.repetition.worst.campaignId}/feed`}
+              className="block rounded-xl outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+            >
+              <CardContent className="flex items-center gap-4 p-4">
+                <CopyCheckIcon className="size-4 shrink-0 text-warning" />
+                <div className="min-w-0 flex-1">
+                  <p
+                    className="truncate text-[14px] font-medium"
+                    title={stats.repetition.worst.fileName}
+                  >
+                    {stats.repetition.worst.fileName}
+                  </p>
+                  <p className="text-[12px] text-muted-foreground">
+                    on {stats.repetition.worst.campaignTitle}
+                  </p>
+                </div>
+                <span className="numeric shrink-0 text-right">
+                  <span className="text-xl font-semibold text-warning">
+                    {stats.repetition.worst.copies}
+                  </span>
+                  <span className="block text-[11px] tracking-wide text-muted-foreground uppercase">
+                    hand-ins
+                  </span>
+                </span>
+              </CardContent>
+            </Link>
+          </Card>
         </section>
       )}
+
+      <section className="space-y-3">
+        <div className="flex items-center gap-3">
+          <h2 className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+            Checking
+          </h2>
+          <span aria-hidden className="h-px flex-1 bg-border" />
+        </div>
+
+        <Card className="overflow-hidden py-0">
+          <CardContent className="divide-y p-0">
+            {stats.health.map((row) => {
+              // Only the latest run per campaign, so a failure from a restart
+              // days ago does not sit here red forever.
+              const isBad =
+                row.lastRunStatus === "FAILED" ||
+                row.lastRunStatus === "TIMEOUT"
+              const isPending = row.unchecked > 0
+              return (
+                <div
+                  key={row.campaignId}
+                  className="flex items-center justify-between gap-4 px-4 py-3"
+                >
+                  <Link
+                    to={`/campaigns/${row.campaignId}/feed`}
+                    className="min-w-0 flex-1 truncate rounded text-[14px] outline-none hover:underline focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                  >
+                    {row.campaignTitle}
+                  </Link>
+                  {row.unchecked > 0 && (
+                    <span className="numeric shrink-0 text-[12px] text-muted-foreground">
+                      {row.unchecked} waiting
+                    </span>
+                  )}
+                  <span
+                    className={cn(
+                      "inline-flex shrink-0 items-center gap-1.5 text-[12px]",
+                      isBad
+                        ? "text-warning"
+                        : isPending
+                          ? "text-muted-foreground"
+                          : "text-success",
+                    )}
+                  >
+                    <span
+                      aria-hidden
+                      className={cn(
+                        "size-1.5 rounded-full",
+                        isBad
+                          ? "bg-warning"
+                          : isPending
+                            ? "bg-muted-foreground"
+                            : "bg-success",
+                      )}
+                    />
+                    {row.lastRunStatus === null
+                      ? "Never checked"
+                      : isBad
+                        ? "Last check failed"
+                        : isPending
+                          ? "Checking"
+                          : "Up to date"}
+                  </span>
+                  <span className="numeric hidden w-20 shrink-0 text-right text-[12px] text-muted-foreground sm:inline">
+                    {row.lastRunAt === null ? "—" : relativeTime(row.lastRunAt)}
+                  </span>
+                </div>
+              )
+            })}
+          </CardContent>
+        </Card>
+      </section>
 
     </div>
   )

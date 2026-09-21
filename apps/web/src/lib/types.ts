@@ -632,10 +632,23 @@ export interface AdminDashboardStats {
     /** Unique as a share of what was checked. Null when nothing has been. */
     originalRate: number | null
   }[]
-  attention: {
-    failedShares: number
-    totalShareRecipients: number
-    failedRuns: number
-    succeededRuns: number
+  repetition: {
+    clusters: number
+    repeatedVideos: number
+    worst: {
+      submissionId: string
+      campaignId: string
+      campaignTitle: string
+      fileName: string
+      copies: number
+    } | null
   }
+  health: {
+    campaignId: string
+    campaignTitle: string
+    /** Null when no run has ever happened — not the same as a failure. */
+    lastRunStatus: string | null
+    lastRunAt: string | null
+    unchecked: number
+  }[]
 }

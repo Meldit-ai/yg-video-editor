@@ -97,18 +97,42 @@ export interface AdminDashboardStats {
   }[];
 
   /**
-   * Things that are failing, and so want attention.
+   * Repeated work: how many distinct cuts were handed in more than once, and
+   * the worst offender.
    *
-   * Both are counted because a number nobody can act on is decoration: a
-   * failed vendor send means work did not reach the vendor, and a failed
-   * comparison run means videos are sitting unchecked.
+   * The number an admin can act on. "64 duplicates" is a tally; "one cut was
+   * handed in 15 times" is a conversation with an editor.
    */
-  attention: {
-    /** Vendor sends that never arrived. */
-    failedShares: number;
-    totalShareRecipients: number;
-    /** Comparison runs that ended FAILED, against those that succeeded. */
-    failedRuns: number;
-    succeededRuns: number;
+  repetition: {
+    /** Cuts that came in more than once. */
+    clusters: number;
+    /** Videos sitting inside those clusters — the repeated work itself. */
+    repeatedVideos: number;
+    /** The most-copied cut, if there is one. */
+    worst: {
+      submissionId: string;
+      campaignId: string;
+      campaignTitle: string;
+      fileName: string;
+      copies: number;
+    } | null;
   };
+
+  /**
+   * What is wrong *now*, per campaign — not a lifetime tally.
+   *
+   * Counting every failure ever recorded showed 19 failed runs on a system
+   * whose last run succeeded, because each dev restart had marked one failed.
+   * A panel that is permanently red is a panel nobody reads, so this reports
+   * only the latest run per campaign and videos still awaiting a check.
+   */
+  health: {
+    campaignId: string;
+    campaignTitle: string;
+    /** Status of the most recent run, or null if none has ever run. */
+    lastRunStatus: string | null;
+    lastRunAt: string | null;
+    /** Videos with no label yet on this campaign. */
+    unchecked: number;
+  }[];
 }

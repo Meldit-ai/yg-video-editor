@@ -170,16 +170,29 @@ describe("DashboardService.adminStats", () => {
       _count: { _all: number };
     }>;
     editorsByCampaign?: Array<{ campaignId: string; editorId: string }>;
-    shareStatuses?: Array<{ status: string; _count: { _all: number } }>;
-    runStatuses?: Array<{ status: string; _count: { _all: number } }>;
+    clusters?: Array<{
+      topMatchSubmissionId: string | null;
+      _count: { _all: number };
+    }>;
+    lastRun?: { status: string; createdAt: Date } | null;
   }) {
     // Order matters: the service issues the campaign-label grouping, then the
     // per-editor grouping, then distinct editors per campaign.
+    // Order matters: campaign labels, per editor, duplicate clusters, then
+    // distinct editors per campaign.
     const groupBy = vi
       .fn()
       .mockResolvedValueOnce(options.byLabel ?? [])
       .mockResolvedValueOnce(options.byEditor ?? [])
+      .mockResolvedValueOnce(options.clusters ?? [])
       .mockResolvedValueOnce(options.editorsByCampaign ?? []);
+    const findFirstRun = vi
+      .fn()
+      .mockResolvedValue(
+        options.lastRun === undefined
+          ? { status: "SUCCEEDED", createdAt: new Date("2026-09-21") }
+          : options.lastRun,
+      );
     const prisma = {
       client: {
         campaign: {
@@ -193,16 +206,20 @@ describe("DashboardService.adminStats", () => {
           findMany: vi.fn().mockResolvedValue([{ id: "u1", name: "Ravi" }]),
         },
         campaignRate: { count: vi.fn().mockResolvedValue(1) },
-        videoSubmission: { groupBy },
-        vendorShareRecipient: {
-          groupBy: vi.fn().mockResolvedValue(options.shareStatuses ?? []),
+        videoSubmission: {
+          groupBy,
+          count: vi.fn().mockResolvedValue(0),
+          findUnique: vi.fn().mockResolvedValue({
+            id: "s1",
+            campaignId: "c1",
+            fileName: "final-cut.mp4",
+            campaign: { title: "Traitors" },
+          }),
         },
-        videoComparison: {
-          groupBy: vi.fn().mockResolvedValue(options.runStatuses ?? []),
-        },
+        videoComparison: { findFirst: findFirstRun },
       },
     } as unknown as PrismaService;
-    return { service: new DashboardService(prisma), groupBy };
+    return { service: new DashboardService(prisma), groupBy, findFirstRun };
   }
 
   it("counts only the editors' hand-ins, not adopted reels", async () => {
@@ -272,31 +289,63 @@ describe("DashboardService.adminStats", () => {
     expect(result.perEditor[0]!.originalRate).toBeNull();
   });
 
-  it("counts failures that want acting on", async () => {
-    const { service } = adminServiceWith({
-      shareStatuses: [
-        { status: "SENT", _count: { _all: 11 } },
-        { status: "FAILED", _count: { _all: 12 } },
-      ],
-      runStatuses: [
-        { status: "FAILED", _count: { _all: 19 } },
-        { status: "SUCCEEDED", _count: { _all: 4 } },
-      ],
+  /**
+   * The bug this exists for: counting every failure ever recorded showed
+   * "19 duplicate checks failed" on a system whose most recent run had
+   * succeeded — each dev restart had marked one failed. A panel that is
+   * permanently red is a panel nobody reads.
+   */
+  it("reports the latest run per campaign, not every run ever", async () => {
+    const { service, findFirstRun } = adminServiceWith({
+      lastRun: { status: "SUCCEEDED", createdAt: new Date("2026-09-21") },
     });
     const result = await service.adminStats();
-    expect(result.attention).toEqual({
-      failedShares: 12,
-      totalShareRecipients: 23,
-      failedRuns: 19,
-      succeededRuns: 4,
+    expect(findFirstRun).toHaveBeenCalledWith(
+      expect.objectContaining({ orderBy: { createdAt: "desc" } }),
+    );
+    expect(result.health[0]).toMatchObject({
+      campaignTitle: "Traitors",
+      lastRunStatus: "SUCCEEDED",
+      unchecked: 0,
     });
   });
 
-  it("reports zero for a status that never occurred", async () => {
-    const { service } = adminServiceWith({ shareStatuses: [], runStatuses: [] });
+  it("says so when a campaign has never been checked", async () => {
+    // Null, not "FAILED": nothing has run, which is not the same as a run
+    // that went wrong.
+    const { service } = adminServiceWith({ lastRun: null });
     const result = await service.adminStats();
-    expect(result.attention.failedShares).toBe(0);
-    expect(result.attention.succeededRuns).toBe(0);
+    expect(result.health[0]!.lastRunStatus).toBeNull();
+    expect(result.health[0]!.lastRunAt).toBeNull();
+  });
+
+  it("groups duplicates into clusters, worst first", async () => {
+    // "64 duplicates" is a tally; "one cut was handed in 15 times" is a
+    // conversation with an editor.
+    const { service } = adminServiceWith({
+      clusters: [
+        { topMatchSubmissionId: "s1", _count: { _all: 15 } },
+        { topMatchSubmissionId: "s2", _count: { _all: 3 } },
+      ],
+    });
+    const result = await service.adminStats();
+    expect(result.repetition.clusters).toBe(2);
+    expect(result.repetition.repeatedVideos).toBe(18);
+    expect(result.repetition.worst).toMatchObject({
+      submissionId: "s1",
+      fileName: "final-cut.mp4",
+      copies: 15,
+    });
+  });
+
+  it("ignores a duplicate with no recorded parent", async () => {
+    // Labelled before the parent was stored; it is not a cluster of its own.
+    const { service } = adminServiceWith({
+      clusters: [{ topMatchSubmissionId: null, _count: { _all: 4 } }],
+    });
+    const result = await service.adminStats();
+    expect(result.repetition.clusters).toBe(0);
+    expect(result.repetition.worst).toBeNull();
   });
 
   it("counts distinct editors, not their rows", async () => {
