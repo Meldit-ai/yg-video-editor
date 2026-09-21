@@ -4,12 +4,15 @@ import {
   Loader2Icon,
   SendIcon,
   TriangleAlertIcon,
+  UploadIcon,
   XCircleIcon,
 } from "lucide-react"
 import { toast } from "sonner"
 
+import { VendorImportDialog } from "@/components/vendor-import-dialog"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import { Input } from "@/components/ui/input"
 import {
   Dialog,
   DialogContent,
@@ -63,6 +66,8 @@ export function VendorShareDialog({
   const [message, setMessage] = useState("")
   const [isSending, setSending] = useState(false)
   const [result, setResult] = useState<VendorShare | null>(null)
+  const [query, setQuery] = useState("")
+  const [isImportOpen, setImportOpen] = useState(false)
   /**
    * The videos as they were when the dialog opened.
    *
@@ -81,6 +86,7 @@ export function VendorShareDialog({
     setShared(ids)
     setResult(null)
     setSelected(new Set())
+    setQuery("")
     setMessage(
       `Hi, please review these ${ids.length === 1 ? "video" : "videos"} for ${campaignTitle} and share your feedback.`,
     )
@@ -144,6 +150,40 @@ export function VendorShareDialog({
     (id) => vendors?.find((vendor) => vendor.id === id)?.reachable ?? false,
   ).length
 
+  const needle = query.trim().toLowerCase()
+  const shown = (vendors ?? []).filter(
+    (vendor) =>
+      needle.length === 0 ||
+      vendor.name.toLowerCase().includes(needle) ||
+      vendor.phoneNumber.toLowerCase().includes(needle),
+  )
+  // Select-all acts on what is on screen and can actually be messaged, not on
+  // the whole directory: ticking a filtered list and silently selecting the
+  // rows it hides is how someone sends to the wrong people.
+  const selectable = shown.filter((vendor) => vendor.reachable)
+  const allShownSelected =
+    selectable.length > 0 && selectable.every((v) => selected.has(v.id))
+
+  function toggleAllShown() {
+    setSelected((current) => {
+      const next = new Set(current)
+      if (allShownSelected) {
+        for (const vendor of selectable) next.delete(vendor.id)
+      } else {
+        for (const vendor of selectable) next.add(vendor.id)
+      }
+      return next
+    })
+  }
+
+  async function reloadVendors() {
+    try {
+      setVendors(await api.get<ShareableVendor[]>("/shareable-vendors"))
+    } catch (caught) {
+      toast.error(errorMessage(caught))
+    }
+  }
+
   // Checked here as well as on the server so the admin is told before writing
   // a message, not after sending one. The server stays the authority.
   const tooManyVideos = shared.length > MAX_SHARE_MEDIA
@@ -189,7 +229,45 @@ export function VendorShareDialog({
             </div>
 
             <div className="space-y-2">
-              <Label className="text-[13px]">Vendors</Label>
+              <div className="flex flex-wrap items-center gap-2">
+                <Label className="text-[13px]">Vendors</Label>
+                {reachableSelected > 0 && (
+                  <span className="numeric rounded bg-muted px-1.5 py-0.5 text-[11px]">
+                    {reachableSelected} selected
+                  </span>
+                )}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="ml-auto h-7 text-[12px]"
+                  onClick={() => setImportOpen(true)}
+                >
+                  <UploadIcon className="size-3.5" />
+                  Import contacts
+                </Button>
+                {selectable.length > 0 && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 text-[12px]"
+                    onClick={toggleAllShown}
+                  >
+                    {allShownSelected ? "Clear" : `Select all (${selectable.length})`}
+                  </Button>
+                )}
+              </div>
+
+              {vendors !== null && vendors.length > 0 && (
+                <Input
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="Search by name or number"
+                  className="h-8 text-[13px]"
+                />
+              )}
+
               {vendors === null ? (
                 <div className="space-y-2">
                   <Skeleton className="h-9 w-full" />
@@ -199,9 +277,13 @@ export function VendorShareDialog({
                 <p className="rounded-md border border-dashed px-3 py-4 text-center text-[13px] text-muted-foreground">
                   No vendors in the directory yet.
                 </p>
+              ) : shown.length === 0 ? (
+                <p className="rounded-md border border-dashed px-3 py-4 text-center text-[13px] text-muted-foreground">
+                  No vendor matches "{query.trim()}".
+                </p>
               ) : (
-                <ul className="max-h-56 overflow-y-auto rounded-md border">
-                  {vendors.map((vendor) => (
+                <ul className="max-h-80 overflow-y-auto rounded-md border">
+                  {shown.map((vendor) => (
                     <li
                       key={vendor.id}
                       className="flex items-center gap-2.5 border-b px-3 py-2 last:border-0"
@@ -290,6 +372,12 @@ export function VendorShareDialog({
           )}
         </DialogFooter>
       </DialogContent>
+
+      <VendorImportDialog
+        open={isImportOpen}
+        onOpenChange={setImportOpen}
+        onImported={reloadVendors}
+      />
     </Dialog>
   )
 }
