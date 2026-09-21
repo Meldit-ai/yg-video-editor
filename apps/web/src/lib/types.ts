@@ -602,3 +602,35 @@ export interface EffectiveRate {
     | "NONE"
   pending: CampaignRate | null
 }
+
+/** Mirrors apps/api/src/dashboard/dashboard.types.ts. */
+export interface AdminCampaignStat {
+  campaignId: string
+  campaignTitle: string
+  videos: number
+  duplicates: number
+  unique: number
+  unchecked: number
+  editors: number
+}
+
+export interface AdminDashboardStats {
+  activeCampaigns: number
+  editors: number
+  videos: number
+  duplicates: number
+  unique: number
+  unchecked: number
+  pendingRates: number
+  perCampaign: AdminCampaignStat[]
+  recent: {
+    submissionId: string
+    campaignId: string
+    campaignTitle: string
+    fileName: string
+    editorName: string
+    uniqueness: Uniqueness | null
+    duplicationScore: number | null
+    createdAt: string
+  }[]
+}

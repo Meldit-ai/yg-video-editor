@@ -1,8 +1,10 @@
 import { Injectable } from "@nestjs/common";
-import { Role, Uniqueness } from "@repo/database";
+import { Role, SubmissionSource, Uniqueness } from "@repo/database";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { PrismaService } from "../prisma/prisma.service.js";
 import type {
+  AdminCampaignStat,
+  AdminDashboardStats,
   DashboardCampaignStat,
   EditorDashboardStats,
 } from "./dashboard.types.js";
@@ -94,6 +96,134 @@ export class DashboardService {
       perCampaign: [...perCampaign.values()].sort(
         (left, right) => right.videos - left.videos,
       ),
+    };
+  }
+
+  /**
+   * Everything an admin needs to start the day, across every campaign.
+   *
+   * Counts the editors' hand-ins only (`source: EDITOR`). Reels adopted from
+   * the tracker are a separate pipeline with its own screens, and blending
+   * them here would report numbers that disagree with the campaign feed.
+   */
+  async adminStats(): Promise<AdminDashboardStats> {
+    const editorWork = {
+      active: true,
+      source: SubmissionSource.EDITOR,
+    } as const;
+
+    const [
+      activeCampaigns,
+      editors,
+      pendingRates,
+      byLabel,
+      campaigns,
+      recentRows,
+    ] = await Promise.all([
+      this.prisma.client.campaign.count({ where: { active: true } }),
+      this.prisma.client.user.count({
+        where: { role: Role.EDITOR, active: true },
+      }),
+      this.prisma.client.campaignRate.count({ where: { status: "PENDING" } }),
+      // One grouped read rather than a count per label.
+      this.prisma.client.videoSubmission.groupBy({
+        by: ["campaignId", "uniqueness"],
+        where: editorWork,
+        _count: { _all: true },
+      }),
+      this.prisma.client.campaign.findMany({
+        where: { active: true },
+        select: { id: true, title: true },
+      }),
+      this.prisma.client.videoSubmission.findMany({
+        where: editorWork,
+        orderBy: { createdAt: "desc" },
+        take: 8,
+        select: {
+          id: true,
+          campaignId: true,
+          fileName: true,
+          uniqueness: true,
+          duplicationScore: true,
+          createdAt: true,
+          campaign: { select: { title: true } },
+          editor: { select: { name: true } },
+        },
+      }),
+    ]);
+
+    // Distinct editors per campaign needs its own grouping: the label
+    // grouping above counts rows, not people.
+    const editorsByCampaign = await this.prisma.client.videoSubmission.groupBy({
+      by: ["campaignId", "editorId"],
+      where: editorWork,
+      _count: { _all: true },
+    });
+
+    const titleById = new Map(campaigns.map((row) => [row.id, row.title]));
+    const perCampaign = new Map<string, AdminCampaignStat>();
+    const blank = (campaignId: string): AdminCampaignStat => ({
+      campaignId,
+      campaignTitle: titleById.get(campaignId) ?? "Deleted campaign",
+      videos: 0,
+      duplicates: 0,
+      unique: 0,
+      unchecked: 0,
+      editors: 0,
+    });
+
+    let videos = 0;
+    let duplicates = 0;
+    let unique = 0;
+    let unchecked = 0;
+
+    for (const row of byLabel) {
+      const stat = perCampaign.get(row.campaignId) ?? blank(row.campaignId);
+      const count = row._count._all;
+      stat.videos += count;
+      videos += count;
+      // PARTIAL is counted in `videos` and nowhere else, as on the editor
+      // dashboard: it is neither an accusation nor a clean bill.
+      if (row.uniqueness === Uniqueness.DUPLICATE) {
+        stat.duplicates += count;
+        duplicates += count;
+      } else if (row.uniqueness === Uniqueness.UNIQUE) {
+        stat.unique += count;
+        unique += count;
+      } else if (row.uniqueness === null) {
+        stat.unchecked += count;
+        unchecked += count;
+      }
+      perCampaign.set(row.campaignId, stat);
+    }
+
+    for (const row of editorsByCampaign) {
+      const stat = perCampaign.get(row.campaignId) ?? blank(row.campaignId);
+      stat.editors += 1;
+      perCampaign.set(row.campaignId, stat);
+    }
+
+    return {
+      activeCampaigns,
+      editors,
+      videos,
+      duplicates,
+      unique,
+      unchecked,
+      pendingRates,
+      perCampaign: [...perCampaign.values()].sort(
+        (left, right) => right.videos - left.videos,
+      ),
+      recent: recentRows.map((row) => ({
+        submissionId: row.id,
+        campaignId: row.campaignId,
+        campaignTitle: row.campaign.title,
+        fileName: row.fileName,
+        editorName: row.editor.name,
+        uniqueness: row.uniqueness,
+        duplicationScore: row.duplicationScore,
+        createdAt: row.createdAt.toISOString(),
+      })),
     };
   }
 }

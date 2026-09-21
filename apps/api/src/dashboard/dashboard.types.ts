@@ -50,3 +50,44 @@ export interface EditorDashboardStats {
   rateCard: number | null;
   perCampaign: DashboardCampaignStat[];
 }
+
+/** One campaign's shape, for the admin overview. */
+export interface AdminCampaignStat {
+  campaignId: string;
+  campaignTitle: string;
+  videos: number;
+  duplicates: number;
+  unique: number;
+  unchecked: number;
+  editors: number;
+}
+
+/**
+ * The whole operation at a glance, for an admin.
+ *
+ * Separate from EditorDashboardStats, which is deliberately one person's own
+ * work: an admin opening that sees their own (usually empty) submissions,
+ * which is honest but useless as a landing page.
+ */
+export interface AdminDashboardStats {
+  activeCampaigns: number;
+  editors: number;
+  videos: number;
+  duplicates: number;
+  unique: number;
+  unchecked: number;
+  /** Rate asks waiting on an admin — something to act on, not just a number. */
+  pendingRates: number;
+  /** Campaigns by size, largest first. */
+  perCampaign: AdminCampaignStat[];
+  recent: {
+    submissionId: string;
+    campaignId: string;
+    campaignTitle: string;
+    fileName: string;
+    editorName: string;
+    uniqueness: "UNIQUE" | "PARTIAL" | "DUPLICATE" | null;
+    duplicationScore: number | null;
+    createdAt: string;
+  }[];
+}

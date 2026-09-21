@@ -1,8 +1,13 @@
 import { Controller, Get } from "@nestjs/common";
+import { Role } from "@repo/database";
 import { CurrentUser } from "../auth/decorators/current-user.decorator.js";
+import { Roles } from "../auth/decorators/roles.decorator.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { DashboardService } from "./dashboard.service.js";
-import type { EditorDashboardStats } from "./dashboard.types.js";
+import type {
+  AdminDashboardStats,
+  EditorDashboardStats,
+} from "./dashboard.types.js";
 
 /**
  * The signed-in user's own dashboard.
@@ -18,5 +23,17 @@ export class DashboardController {
   @Get("me")
   myStats(@CurrentUser() user: AuthenticatedUser): Promise<EditorDashboardStats> {
     return this.dashboardService.statsFor(user);
+  }
+
+  /**
+   * GET /api/dashboard/admin — every campaign, for an admin.
+   *
+   * Explicitly @Roles(ADMIN): unlike /me this reads everyone's work, so it is
+   * the one route here that is not about the caller.
+   */
+  @Get("admin")
+  @Roles(Role.ADMIN)
+  adminStats(): Promise<AdminDashboardStats> {
+    return this.dashboardService.adminStats();
   }
 }

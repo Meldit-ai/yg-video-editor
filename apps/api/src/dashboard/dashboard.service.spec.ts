@@ -145,3 +145,85 @@ describe("DashboardService.statsFor", () => {
     expect(stats.estimatedEarnings).toBeNull();
   });
 });
+
+describe("DashboardService.adminStats", () => {
+  function adminServiceWith(options: {
+    byLabel?: Array<{
+      campaignId: string;
+      uniqueness: Uniqueness | null;
+      _count: { _all: number };
+    }>;
+    editorsByCampaign?: Array<{ campaignId: string; editorId: string }>;
+  }) {
+    const groupBy = vi
+      .fn()
+      // First call is the label grouping, second is distinct editors.
+      .mockResolvedValueOnce(options.byLabel ?? [])
+      .mockResolvedValueOnce(options.editorsByCampaign ?? []);
+    const prisma = {
+      client: {
+        campaign: {
+          count: vi.fn().mockResolvedValue(2),
+          findMany: vi
+            .fn()
+            .mockResolvedValue([{ id: "c1", title: "Traitors" }]),
+        },
+        user: { count: vi.fn().mockResolvedValue(3) },
+        campaignRate: { count: vi.fn().mockResolvedValue(1) },
+        videoSubmission: {
+          groupBy,
+          findMany: vi.fn().mockResolvedValue([]),
+        },
+      },
+    } as unknown as PrismaService;
+    return { service: new DashboardService(prisma), groupBy };
+  }
+
+  it("counts only the editors' hand-ins, not adopted reels", async () => {
+    // Reels brought in from the tracker are a separate pipeline with its own
+    // screens; blending them would disagree with the campaign feed.
+    const { service, groupBy } = adminServiceWith({});
+    await service.adminStats();
+    expect(groupBy.mock.calls[0]![0]!.where).toMatchObject({
+      active: true,
+      source: "EDITOR",
+    });
+  });
+
+  it("totals the labels across campaigns", async () => {
+    const { service } = adminServiceWith({
+      byLabel: [
+        { campaignId: "c1", uniqueness: Uniqueness.UNIQUE, _count: { _all: 32 } },
+        { campaignId: "c1", uniqueness: Uniqueness.DUPLICATE, _count: { _all: 64 } },
+        { campaignId: "c1", uniqueness: Uniqueness.PARTIAL, _count: { _all: 1 } },
+      ],
+      editorsByCampaign: [{ campaignId: "c1", editorId: "u1" }],
+    });
+    const stats = await service.adminStats();
+    expect(stats.unique).toBe(32);
+    expect(stats.duplicates).toBe(64);
+    // The PARTIAL counts in videos and in neither label, as on /me.
+    expect(stats.videos).toBe(97);
+    expect(stats.perCampaign[0]).toMatchObject({
+      campaignTitle: "Traitors",
+      videos: 97,
+      unique: 32,
+      duplicates: 64,
+      editors: 1,
+    });
+  });
+
+  it("counts distinct editors, not their rows", async () => {
+    const { service } = adminServiceWith({
+      byLabel: [
+        { campaignId: "c1", uniqueness: Uniqueness.UNIQUE, _count: { _all: 9 } },
+      ],
+      editorsByCampaign: [
+        { campaignId: "c1", editorId: "u1" },
+        { campaignId: "c1", editorId: "u2" },
+      ],
+    });
+    const stats = await service.adminStats();
+    expect(stats.perCampaign[0]!.editors).toBe(2);
+  });
+});

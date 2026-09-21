@@ -9,7 +9,6 @@ import {
   Trash2Icon,
   TriangleAlertIcon,
   UploadIcon,
-  FilterIcon,
   PencilIcon,
 } from "lucide-react"
 import { AnimatePresence, motion, useReducedMotion } from "motion/react"
@@ -98,6 +97,17 @@ function percent(fraction: number): number {
 interface CampaignSubmissionsProps {
   campaignId: string
 }
+
+/**
+ * The filter bar's options. `null` is "everything" rather than a missing
+ * value, and "unchecked" is a word because a URL has to carry it.
+ */
+const SUBMISSION_FILTERS = [
+  { label: "All", value: null },
+  { label: "Unique", value: "UNIQUE" },
+  { label: "Duplicate", value: "DUPLICATE" },
+  { label: "Not checked", value: "unchecked" },
+] as const
 
 /**
  * The submission panel on the campaign page: hand in a cut, watch it upload,
@@ -365,32 +375,38 @@ export function CampaignSubmissions({ campaignId }: CampaignSubmissionsProps) {
         {(items.length > 0 || isUploading) && uploadButton}
       </div>
 
-      {/* A filter the reader arrived at from elsewhere has to announce itself:
-          a short list with no explanation reads as missing videos. */}
-      {uniqueness !== null && (
-        <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2 text-[12px]">
-          <FilterIcon className="size-3.5 shrink-0 text-muted-foreground" />
-          <span>
-            Showing{" "}
-            <strong className="font-medium">
-              {uniqueness === "unchecked"
-                ? "videos not checked yet"
-                : `${uniqueness.toLowerCase()} videos`}
-            </strong>{" "}
-            only
-          </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="ml-auto h-7 text-[12px]"
-            onClick={() => {
-              const next = new URLSearchParams(searchParams)
-              next.delete("uniqueness")
-              setSearchParams(next, { replace: true })
-            }}
-          >
-            Show all
-          </Button>
+      {/* A real control, not just a readout: the reader can narrow the list
+          here as well as arrive already narrowed from the dashboard. */}
+      {(items.length > 0 || uniqueness !== null) && (
+        <div className="flex flex-wrap items-center gap-1 rounded-md border p-0.5">
+          {SUBMISSION_FILTERS.map((option) => {
+            const isActive = (uniqueness ?? null) === option.value
+            return (
+              <button
+                key={option.label}
+                type="button"
+                onClick={() => {
+                  const next = new URLSearchParams(searchParams)
+                  if (option.value === null) next.delete("uniqueness")
+                  else next.set("uniqueness", option.value)
+                  setSearchParams(next, { replace: true })
+                }}
+                className={cn(
+                  "rounded px-2.5 py-1 text-[12px] transition-colors",
+                  isActive
+                    ? "bg-muted text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {option.label}
+              </button>
+            )
+          })}
+          {uniqueness !== null && (
+            <span className="numeric ml-auto pr-2 text-[12px] text-muted-foreground">
+              {items.length} shown
+            </span>
+          )}
         </div>
       )}
 

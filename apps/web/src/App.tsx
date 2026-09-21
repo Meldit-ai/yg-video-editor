@@ -17,6 +17,8 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { CampaignDetailPage } from "@/pages/campaign-detail-page"
+import { useAuth } from "@/auth/auth-context"
+import { AdminDashboardPage } from "@/pages/admin-dashboard-page"
 import { EditorDashboardPage } from "@/pages/editor-dashboard-page"
 import { CampaignMatchesPage } from "@/pages/campaign-matches-page"
 import { CampaignReelsPage } from "@/pages/campaign-reels-page"
@@ -26,6 +28,17 @@ import { LoginPage } from "@/pages/login-page"
 import { NoAccessPage } from "@/pages/no-access-page"
 import { UsersPage } from "@/pages/users-page"
 import { VendorsPage } from "@/pages/vendors-page"
+
+/**
+ * One path, two dashboards.
+ *
+ * `/dashboard` stays a single address so every existing link and redirect
+ * keeps working; which page it resolves to is a property of the caller.
+ */
+function DashboardRoute() {
+  const { user } = useAuth()
+  return user?.role === "ADMIN" ? <AdminDashboardPage /> : <EditorDashboardPage />
+}
 
 function NotFoundPage() {
   return (
@@ -57,8 +70,10 @@ const router = createBrowserRouter([
         element: <AppLayout />,
         children: [
           { index: true, element: <Navigate to="/dashboard" replace /> },
-          // Open to both roles: it only ever shows the caller's own work.
-          { path: "dashboard", element: <EditorDashboardPage /> },
+          // Both roles, different pages. The editor one reads only the
+          // caller's own submissions, so an admin — who has usually handed in
+          // nothing — was greeted by an empty state on their landing page.
+          { path: "dashboard", element: <DashboardRoute /> },
           { path: "no-access", element: <NoAccessPage /> },
           // Campaigns are open to every signed-in user: the page itself picks
           // the admin table or the editor browse grid, and the API scopes what
