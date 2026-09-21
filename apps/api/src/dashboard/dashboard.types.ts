@@ -7,14 +7,34 @@ export interface DashboardCampaignStat {
   campaignId: string;
   campaignTitle: string;
   videos: number;
-  /** Videos on this campaign that met its own threshold. */
+  /** Videos on this campaign labelled DUPLICATE. */
   duplicates: number;
+  /** Videos on this campaign labelled UNIQUE. */
+  unique: number;
+  /** Videos on this campaign no run has reached yet. */
+  unchecked: number;
 }
 
 export interface EditorDashboardStats {
   videosUploaded: number;
-  /** Videos flagged against their campaign's accepted-duplication level. */
+  /**
+   * Videos labelled DUPLICATE by the classifier.
+   *
+   * Read from `uniqueness`, not the deprecated `overThreshold` boolean, so this
+   * agrees with the campaign feed and the reels view rather than reporting its
+   * own separate number.
+   */
   duplicateCount: number;
+  /** Videos labelled UNIQUE — the editor's own original work. */
+  uniqueCount: number;
+  /**
+   * Videos no comparison run has reached yet.
+   *
+   * Kept apart from the clean count on purpose: "not yet checked" is not the
+   * same finding as "checked and original", and folding the two together
+   * flatters the dashboard on a campaign mid-run.
+   */
+  uncheckedCount: number;
   /**
    * Mean `duplicationScore` over the videos that have been compared. Null when
    * none have — which is not the same as zero.
