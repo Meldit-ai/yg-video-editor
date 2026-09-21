@@ -6,6 +6,8 @@ import {
   DownloadIcon,
   ExternalLinkIcon,
   Loader2Icon,
+  ChevronDownIcon,
+  ChevronRightIcon,
   RotateCwIcon,
   ScanSearchIcon,
   SparklesIcon,
@@ -28,6 +30,7 @@ import type {
   ReelCheckRun,
   ReelImportResult,
 } from "@/lib/types"
+import { groupDuplicates } from "@/lib/duplicate-groups"
 import { cn } from "@/lib/utils"
 
 /** While a check is running, the numbers move often enough to watch. */
@@ -123,9 +126,13 @@ export function CampaignReelsPage() {
     }
   }
 
+  // Grouped by what each reel was measured against, so a cut posted by nine
+  // accounts reads as one finding rather than nine rows.
+  const groups = groupDuplicates(
+    reels.map((reel) => ({ ...reel, parentId: reel.originalReelId })),
+  )
   const checked = reels.filter((reel) => reel.uniqueness !== null)
   const copies = checked.filter((reel) => reel.uniqueness === "DUPLICATE")
-  const partials = checked.filter((reel) => reel.uniqueness === "PARTIAL")
 
   return (
     <motion.div
@@ -217,14 +224,19 @@ export function CampaignReelsPage() {
             total={reels.length}
             checked={checked.length}
             copies={copies.length}
-            partials={partials.length}
+            distinct={groups.length}
             threshold={campaign?.duplicationThreshold ?? 0}
           />
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {reels.map((reel, index) => (
-              <ReelCard key={reel.id} reel={reel} rank={index + 1} />
+          <ul className="flex flex-col gap-3">
+            {groups.map((group, index) => (
+              <ReelGroup
+                key={group.head.id}
+                head={group.head}
+                copies={group.children}
+                rank={index + 1}
+              />
             ))}
-          </div>
+          </ul>
         </>
       )}
     </motion.div>
@@ -291,13 +303,14 @@ function SummaryRow({
   total,
   checked,
   copies,
-  partials,
+  distinct,
   threshold,
 }: {
   total: number
   checked: number
   copies: number
-  partials: number
+  /** Groups after folding copies under what they were measured against. */
+  distinct: number
   threshold: number
 }) {
   return (
@@ -315,9 +328,15 @@ function SummaryRow({
         tone={copies > 0 ? "warning" : "default"}
       />
       <Stat
-        label="Partial matches"
-        value={String(partials)}
-        hint={`Resemble an earlier reel, below ${threshold}%`}
+        // The number the page is really about: how many different videos this
+        // campaign holds, once the reposts of each are folded together.
+        label="Distinct videos"
+        value={String(distinct)}
+        hint={
+          total > distinct
+            ? `${total - distinct} reels repost one of these`
+            : "Every reel is its own video"
+        }
       />
     </div>
   )
@@ -356,7 +375,71 @@ function Stat({
   )
 }
 
-function ReelCard({ reel, rank }: { reel: CampaignReel; rank: number }) {
+/**
+ * One original and the reels found to carry the same cut.
+ *
+ * Collapsed to the original, because that is the finding: this video exists,
+ * and N accounts posted it. The copies are a click away rather than filling
+ * the page between unrelated originals.
+ */
+function ReelGroup({
+  head,
+  copies,
+  rank,
+}: {
+  head: CampaignReel & { parentId: string | null }
+  copies: (CampaignReel & { parentId: string | null })[]
+  rank: number
+}) {
+  const [isOpen, setOpen] = useState(false)
+
+  return (
+    <li className="rounded-lg border">
+      <div className="flex flex-wrap items-center gap-2 px-3 py-2">
+        <span className="numeric shrink-0 text-[11px] text-muted-foreground">
+          {rank}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
+          @{head.username}
+        </span>
+        <ScoreBadge reel={head} />
+        {copies.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setOpen((open) => !open)}
+            className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[12px] transition-colors hover:bg-muted"
+          >
+            {isOpen ? (
+              <ChevronDownIcon className="size-3.5" />
+            ) : (
+              <ChevronRightIcon className="size-3.5" />
+            )}
+            {copies.length === 1
+              ? "1 account posted this"
+              : `${copies.length} accounts posted this`}
+          </button>
+        )}
+      </div>
+
+      <div className="grid gap-3 px-3 pb-3 sm:grid-cols-2 lg:grid-cols-3">
+        <ReelCard reel={head} />
+        {isOpen &&
+          copies.map((copy) => (
+            <ReelCard key={copy.id} reel={copy} derivedFrom={head.username} />
+          ))}
+      </div>
+    </li>
+  )
+}
+
+function ReelCard({
+  reel,
+  derivedFrom,
+}: {
+  reel: CampaignReel
+  /** The handle this reel copied, when it is inside a group. */
+  derivedFrom?: string
+}) {
   const [isUnplayable, setUnplayable] = useState(false)
   const views = reel.postCounts?.views ?? reel.postCounts?.reach ?? null
   const isCopy = reel.uniqueness === "DUPLICATE"
@@ -387,14 +470,18 @@ function ReelCard({ reel, rank }: { reel: CampaignReel; rank: number }) {
 
       <div className="flex flex-col gap-1.5 px-3 py-2.5">
         <div className="flex items-center gap-2">
-          <span className="numeric shrink-0 text-[11px] text-muted-foreground">
-            {rank}
-          </span>
           <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
             @{reel.username}
           </span>
           <ScoreBadge reel={reel} />
         </div>
+
+        {derivedFrom !== undefined && (
+          <span className="inline-flex items-center gap-1 text-[12px] text-[var(--warning)]">
+            <CopyIcon className="size-3" />
+            same cut as @{derivedFrom}
+          </span>
+        )}
 
         <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px] text-muted-foreground">
           <span
@@ -444,6 +531,9 @@ function ScoreBadge({ reel }: { reel: CampaignReel }) {
     <UniquenessBadge
       uniqueness={reel.uniqueness}
       value={reel.duplicationScore}
+      // Two labels on this page, not three: a PARTIAL heads its own group
+      // exactly as a UNIQUE does. Its percentage still shows.
+      partialAsOriginal
       pendingLabel={reel.checkedAt === null ? "Not checked" : "Unreadable"}
       className="shrink-0"
     />
