@@ -33,8 +33,9 @@ routes are prefixed with `/api`.
 
 ## Routes
 
-Everything except `/api/health` and the two `/api/auth` OTP steps requires a
-bearer token; `/api/users`, `/api/campaigns` and `/api/vendors` are ADMIN-only.
+Everything except `/api/health`, the two `/api/auth` OTP steps, and the
+engine callback below requires a bearer token; `/api/users`, `/api/campaigns`
+and `/api/vendors` are ADMIN-only.
 
 - `GET /api/health` — `{ status, service, timestamp }`. Never touches the
   database, so it works without Postgres running.
@@ -42,6 +43,10 @@ bearer token; `/api/users`, `/api/campaigns` and `/api/vendors` are ADMIN-only.
 - `GET POST PATCH DELETE /api/users[/:id]` — accounts. `DELETE` is a soft delete.
 - `GET POST PATCH DELETE /api/campaigns[/:id]` — `?status=ACTIVE|INACTIVE`.
 - `GET /api/tracker/campaigns` — proxied, cached ~5 min, serves stale on failure.
+- `POST /api/comparisons/engine-callback` — public, HMAC-signed. The
+  comparison engine posts a finished job document here instead of (or as
+  well as) being polled; authenticated by `X-Engine-Signature`, not a bearer
+  token. 503 while `COMPARISON_ENGINE_CALLBACK_SECRET` is unset.
 
 ### Vendors
 

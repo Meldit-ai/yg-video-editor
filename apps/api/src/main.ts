@@ -1,8 +1,10 @@
 import "reflect-metadata";
 import { Logger, ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
+import type { NestExpressApplication } from "@nestjs/platform-express";
 import type { Server } from "node:http";
 import { AppModule } from "./app.module.js";
+import { resolveEngineCallbackUrl } from "./comparisons/engine-callback.route.js";
 
 // Values already present in the shell environment win over .env entries.
 try {
@@ -12,11 +14,20 @@ try {
 }
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    rawBody: true,
+  });
 
   app.enableShutdownHooks();
   app.setGlobalPrefix("api");
   app.enableCors({ origin: "http://localhost:8701" });
+
+  // `rawBody: true` above gives the engine-callback route the exact bytes to
+  // verify its HMAC over. Nest registers exactly one JSON parser, and this
+  // call replaces the default one, so the 2 MB limit and the raw-body capture
+  // both apply together; the parser only touches application/json, so the
+  // streamed multipart video uploads are unaffected.
+  app.useBodyParser("json", { limit: "2mb" });
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -44,6 +55,14 @@ async function bootstrap(): Promise<void> {
 
   Logger.log(
     `API listening at http://localhost:${port}/api (health: http://localhost:${port}/api/health)`,
+    "Bootstrap",
+  );
+
+  const callbackUrl = resolveEngineCallbackUrl();
+  Logger.log(
+    callbackUrl === null
+      ? "Engine callbacks: off (API_PUBLIC_URL unset — polling mode)"
+      : `Engine callbacks: on (${callbackUrl})`,
     "Bootstrap",
   );
 }

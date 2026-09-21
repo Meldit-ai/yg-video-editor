@@ -1,11 +1,14 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { pause } from "../common/pause.js";
+import { Semaphore } from "../common/semaphore.js";
 import {
   isTerminal,
   parseJob,
   parseSubmitResponse,
   type EngineJob,
 } from "./comparison-engine.types.js";
+import { resolveEngineCallbackUrl } from "./engine-callback.route.js";
+import { EngineJobNotifications } from "./engine-job-notifications.js";
 
 /**
  * Where the engine lives. Local by default because that is where it runs
@@ -116,6 +119,29 @@ const DEFAULT_MAX_WAIT_MS = 30 * 60 * 1000;
 const POLL_FAILURE_GRACE_MS = 60_000;
 
 /**
+ * The fallback poll's own pace, once callback mode is on — much sparser than
+ * `FAST_POLL_MS`/`SLOW_POLL_MS`, because it is a safety net for a lost
+ * callback, not the primary way of finding out a job is done. A callback
+ * through the tunnel lands within a second of the job settling, so a job
+ * still running at the first check (60 s) is a long fingerprint, not a
+ * dropped notification. The last entry repeats for as long as the job runs.
+ */
+const FALLBACK_POLL_SCHEDULE_MS = [60_000, 120_000, 180_000] as const;
+
+/** ±25 % around a scheduled delay, so jobs started together do not all poll on the same tick. */
+function jitter(ms: number): number {
+  return ms * (0.75 + Math.random() * 0.5);
+}
+
+/**
+ * Caps how many fallback polls are in flight at once, across every job this
+ * process is waiting on — not per job. Callback mode is meant to make
+ * polling rare; without this, many callbacks lost at once (a tunnel outage)
+ * would turn into a burst of polls against the engine instead.
+ */
+const FALLBACK_POLLS = new Semaphore(4);
+
+/**
  * Statuses that mean "not now", never "not ever": the engine's own queue-full
  * 503 (`engine_busy`), uvicorn refusing past its concurrency cap (a plain
  * 503), a relay or proxy in between (502/504), or a rate limit (429). Each is
@@ -180,9 +206,13 @@ export interface WaitForJobOptions {
  * integration: `submit` hands over a list of URLs and gets a job id back
  * immediately, and `fetchJob` reads that job until it stops changing. The
  * waiting is done here too — `submitWithBackoff` rides out a full queue and
- * `waitForJob` polls to a terminal state — so every caller shares one idea of
- * how patient to be with the engine. Each poll is a short request; nothing
- * holds a socket open across the minutes a comparison takes.
+ * `waitForJob` learns the result — so every caller shares one idea of how
+ * patient to be with the engine. Each poll is a short request; nothing holds
+ * a socket open across the minutes a comparison takes.
+ *
+ * When `API_PUBLIC_URL` is set, `submit` hands the engine a callback URL and
+ * `waitForJob` waits on the in-process notification that URL delivers,
+ * polling only as a sparse fallback. Unset, it polls exactly as before.
  *
  * The base URL is read per call rather than memoised. It costs nothing, and
  * it means a restart is not needed to point at a different engine.
@@ -190,6 +220,8 @@ export interface WaitForJobOptions {
 @Injectable()
 export class ComparisonEngineClient {
   private readonly logger = new Logger(ComparisonEngineClient.name);
+
+  constructor(private readonly notifications: EngineJobNotifications) {}
 
   /** The configured engine root, without a trailing slash. */
   get baseUrl(): string {
@@ -201,6 +233,16 @@ export class ComparisonEngineClient {
   }
 
   /**
+   * The editor's own public origin (a dev tunnel today), read fresh per call
+   * for the same reason as `baseUrl`. Set, the engine is asked to call back
+   * when a job settles and the poll loop becomes a fallback; unset, this is
+   * `null` and `waitForJob` polls exactly as it always has.
+   */
+  get callbackUrl(): string | null {
+    return resolveEngineCallbackUrl(process.env);
+  }
+
+  /**
    * Queues a comparison of every URL against every other, and returns the job
    * id to poll.
    *
@@ -209,7 +251,11 @@ export class ComparisonEngineClient {
    * discard the pairs among the others — there is no one-vs-many endpoint.
    */
   async submit(urls: string[]): Promise<string> {
-    const response = await this.send("POST", "/v1/compare", { urls });
+    const callbackUrl = this.callbackUrl;
+    const response = await this.send("POST", "/v1/compare", {
+      urls,
+      ...(callbackUrl === null ? {} : { callback_url: callbackUrl }),
+    });
     const jobId = parseSubmitResponse(await response.json());
     this.logger.log(`Queued comparison job ${jobId} over ${urls.length} URLs`);
     return jobId;
@@ -249,17 +295,168 @@ export class ComparisonEngineClient {
   }
 
   /**
-   * Reads one job until it stops changing, and returns it.
+   * Learns one job's outcome, and returns it.
    *
-   * Transient failures are tolerated: the engine restarting mid-job is normal
-   * operations, and abandoning a call that is still computing would be worse
-   * than waiting. Only a sustained outage, the deadline, or the caller's
-   * signal ends it — and in those cases the job is thrown, not returned,
-   * because there is no result to hand back.
+   * `API_PUBLIC_URL` unset: polls to a terminal state (`pollUntilTerminal`).
+   * Set: `submit` already asked the engine to call back, so this waits on
+   * that in-process notification and polls only sparsely as a fallback —
+   * see `pollSparsely` for why a lost callback is not an emergency.
+   *
+   * Transient failures are tolerated throughout: the engine restarting
+   * mid-job is normal operations, and abandoning a call that is still
+   * computing would be worse than waiting. Only a sustained outage, the
+   * deadline, or the caller's signal ends it — and in those cases the job is
+   * thrown, not returned, because there is no result to hand back.
    */
   async waitForJob(
     jobId: string,
     options: WaitForJobOptions = {},
+  ): Promise<EngineJob> {
+    if (this.callbackUrl === null) return this.pollUntilTerminal(jobId, options);
+
+    const startedAt = Date.now();
+    const local = new AbortController();
+    const signal = options.signal
+      ? AbortSignal.any([options.signal, local.signal])
+      : local.signal;
+    try {
+      const winner = await Promise.race([
+        this.awaitNotification(jobId, signal).then((job) => ({
+          source: "notification" as const,
+          job,
+        })),
+        this.pollSparsely(jobId, { ...options, signal }, startedAt).then((job) => ({
+          source: "poll" as const,
+          job,
+        })),
+      ]);
+      if (winner.source === "poll") {
+        this.logger.warn(
+          `Job ${jobId} finished via fallback poll — no callback arrived; check API_PUBLIC_URL / COMPARISON_ENGINE_CALLBACK_SECRET and the engine's callback.last_error`,
+        );
+      }
+      return winner.job;
+    } finally {
+      // Stops whichever branch lost the race; its rejection is consumed by
+      // Promise.race, which already attached a handler to both promises.
+      local.abort();
+      this.notifications.forget(jobId);
+    }
+  }
+
+  /**
+   * Waits on the engine's callback for `jobId`, re-fetching only when a
+   * notification arrives that cannot be trusted on its own.
+   *
+   * Never throws except when `signal` aborts: an unparseable payload or a
+   * failed confirmation fetch is not a reason to give up — `pollSparsely`
+   * is still running underneath this as the real safety net, so the worst
+   * outcome of a bad callback is falling back to it.
+   */
+  private async awaitNotification(
+    jobId: string,
+    signal: AbortSignal,
+  ): Promise<EngineJob> {
+    for (;;) {
+      const payload = await this.notifications.waitFor(jobId, signal);
+      try {
+        return parseJob(payload);
+      } catch {
+        this.logger.warn(
+          `callback for job ${jobId} was not a readable job document; fetching it`,
+        );
+        try {
+          const job = await this.fetchJob(jobId);
+          if (isTerminal(job.status)) return job;
+          this.logger.debug(
+            `job ${jobId} was not terminal yet after an unparseable callback; waiting for the next notification`,
+          );
+        } catch (caught) {
+          this.logger.debug(
+            `fetching job ${jobId} after an unparseable callback failed: ${messageOf(caught)}; waiting for the next notification`,
+          );
+        }
+      }
+    }
+  }
+
+  /**
+   * The fallback poll behind callback mode.
+   *
+   * Sparse and jittered on purpose: a callback through the tunnel lands
+   * within a second of the job settling, so a job still running at the
+   * first check (60 s) is a long fingerprint, not a lost callback — there is
+   * no reason to look sooner. `FALLBACK_POLLS` caps how many of these run at
+   * once across every job, and the jitter spreads them out, so many
+   * callbacks lost together (a tunnel outage) do not turn into a burst
+   * against the engine.
+   */
+  private async pollSparsely(
+    jobId: string,
+    options: WaitForJobOptions,
+    startedAt: number,
+  ): Promise<EngineJob> {
+    const maxWaitMs = options.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
+    let failingSince: number | null = null;
+    let step = 0;
+
+    for (;;) {
+      const delay =
+        failingSince === null
+          ? jitter(
+              FALLBACK_POLL_SCHEDULE_MS[
+                Math.min(step, FALLBACK_POLL_SCHEDULE_MS.length - 1)
+              ]!,
+            )
+          : SLOW_POLL_MS;
+      await pause(delay, options.signal);
+
+      if (Date.now() - startedAt > maxWaitMs) {
+        throw new Error(
+          `The engine did not finish job ${jobId} within ${Math.round(maxWaitMs / 60_000)} minutes.`,
+        );
+      }
+
+      const release = await FALLBACK_POLLS.acquire(options.signal);
+      let job: EngineJob;
+      try {
+        job = await this.fetchJob(jobId);
+        failingSince = null;
+      } catch (caught) {
+        failingSince ??= Date.now();
+        if (Date.now() - failingSince < POLL_FAILURE_GRACE_MS) continue;
+        throw caught;
+      } finally {
+        release();
+      }
+
+      // The GET above can take up to REQUEST_TIMEOUT_MS, which is not tied to
+      // this signal — only `pause` and `acquire` are. So a notification can
+      // win the race while this fetch is in flight, and `waitForJob`'s
+      // `finally` will already have called `local.abort()` by the time we
+      // get here. Without this check a stale non-terminal job would reach
+      // `onProgress`, or even be returned, after the caller already has the
+      // real (terminal) result.
+      if (options.signal && options.signal.aborted) {
+        throw options.signal.reason as Error;
+      }
+
+      step += 1;
+      if (isTerminal(job.status)) return job;
+      options.onProgress?.(job);
+    }
+  }
+
+  /**
+   * Today's polling loop, moved here verbatim: fast at first, slower once the
+   * call is clearly not a quick one, tolerant of transient failures, and
+   * bounded by `maxWaitMs` and `options.signal`. Used directly when
+   * `callbackUrl` is `null`, and by nothing else — callback mode's fallback
+   * is `pollSparsely`, which paces itself far more sparsely.
+   */
+  private async pollUntilTerminal(
+    jobId: string,
+    options: WaitForJobOptions,
   ): Promise<EngineJob> {
     const maxWaitMs = options.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
     const startedAt = Date.now();

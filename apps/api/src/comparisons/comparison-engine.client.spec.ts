@@ -1,5 +1,7 @@
+import { Logger } from "@nestjs/common";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ComparisonEngineClient, engineMaxUrls } from "./comparison-engine.client.js";
+import { EngineJobNotifications } from "./engine-job-notifications.js";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -43,7 +45,7 @@ describe("ComparisonEngineClient", () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
-    client = new ComparisonEngineClient();
+    client = new ComparisonEngineClient(new EngineJobNotifications());
   });
 
   afterEach(() => {
@@ -236,5 +238,219 @@ describe("ComparisonEngineClient", () => {
       await vi.advanceTimersByTimeAsync(10_000);
       await outcome;
     });
+  });
+});
+
+describe("callback mode", () => {
+  let client: ComparisonEngineClient;
+  let notifications: EngineJobNotifications;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    process.env.API_PUBLIC_URL = "https://editor.example/";
+    vi.spyOn(Math, "random").mockReturnValue(0.5); // jitter factor exactly 1.0
+    notifications = new EngineJobNotifications();
+    client = new ComparisonEngineClient(notifications);
+  });
+
+  afterEach(() => {
+    delete process.env.API_PUBLIC_URL;
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it("submit sends callback_url built from the base URL", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => jsonResponse({ job_id: "job-1" }, 202));
+
+    await client.submit(["u1", "u2"]);
+    const [, withCallback] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(withCallback.body as string)).toMatchObject({
+      callback_url: "https://editor.example/api/comparisons/engine-callback",
+    });
+
+    delete process.env.API_PUBLIC_URL;
+    await client.submit(["u1", "u2"]);
+    const [, withoutCallback] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(JSON.parse(withoutCallback.body as string)).not.toHaveProperty("callback_url");
+  });
+
+  it("waitForJob resolves from a notification with zero fetches", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    const pending = client.waitForJob("job-1");
+    notifications.notify("job-1", jobPayload("succeeded"));
+
+    await expect(pending).resolves.toMatchObject({ status: "SUCCEEDED" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("a notification buffered before waitForJob resolves it without a fetch", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    notifications.notify("job-1", jobPayload("succeeded"));
+    const pending = client.waitForJob("job-1");
+
+    await expect(pending).resolves.toMatchObject({ status: "SUCCEEDED" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("an unparseable notification triggers exactly one GET", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(jobPayload("succeeded")));
+
+    const pending = client.waitForJob("job-1");
+    notifications.notify("job-1", { nonsense: true });
+
+    await expect(pending).resolves.toMatchObject({ status: "SUCCEEDED" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("first fallback poll lands at 60 s", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(jobPayload("running")));
+
+    client.waitForJob("job-1").catch(() => {});
+
+    await vi.advanceTimersByTimeAsync(59_000);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("then 120 s and 180 s steps", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => jsonResponse(jobPayload("running")));
+
+    client.waitForJob("job-1").catch(() => {});
+
+    await vi.advanceTimersByTimeAsync(61_000); // first poll, at 60 s
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(120_000); // second poll, at +120 s
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(180_000); // third poll, at +180 s
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    await vi.advanceTimersByTimeAsync(180_000); // schedule's last entry repeats
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("at most four fallback polls are in flight across jobs", async () => {
+    const releasers: Array<(response: Response) => void> = [];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(
+      () =>
+        new Promise<Response>((resolve) => {
+          releasers.push(resolve);
+        }),
+    );
+
+    const jobIds = ["job-1", "job-2", "job-3", "job-4", "job-5", "job-6"];
+    for (const jobId of jobIds) {
+      client.waitForJob(jobId).catch(() => {});
+    }
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+
+    const inFlight = releasers.splice(0, releasers.length);
+    inFlight.forEach((resolve) => resolve(jsonResponse(jobPayload("running"))));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+  });
+
+  it("a stale fallback fetch in flight when a notification wins never reaches onProgress", async () => {
+    let releaseFetch: ((response: Response) => void) | null = null;
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      () =>
+        new Promise<Response>((resolve) => {
+          releaseFetch = resolve;
+        }),
+    );
+    const onProgress = vi.fn();
+
+    const pending = client.waitForJob("job-1", { onProgress });
+
+    // First fallback poll fires at 60 s; its GET is left in flight (the mock
+    // never resolves on its own), matching a slow request racing a callback.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(releaseFetch).not.toBeNull();
+
+    // The callback wins the race while that GET is still outstanding.
+    notifications.notify("job-1", jobPayload("succeeded"));
+    await expect(pending).resolves.toMatchObject({ status: "SUCCEEDED" });
+
+    // Only now does the stale GET resolve, with a non-terminal job.
+    releaseFetch!(jsonResponse(jobPayload("running")));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(onProgress).not.toHaveBeenCalled();
+  });
+
+  it("deadline still throws", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => jsonResponse(jobPayload("running")));
+
+    const pending = client.waitForJob("job-1", { maxWaitMs: 5 * 60_000 });
+    const outcome = expect(pending).rejects.toThrow(/did not finish/);
+    await vi.advanceTimersByTimeAsync(6 * 60_000);
+    await outcome;
+  });
+
+  it("abort stops both branches and forgets the job", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(jobPayload("running")));
+    const controller = new AbortController();
+
+    const pending = client.waitForJob("job-1", { signal: controller.signal });
+    const outcome = expect(pending).rejects.toThrow(/abort/i);
+    await vi.advanceTimersByTimeAsync(1_000);
+    controller.abort();
+    await outcome;
+
+    expect(notifications.notify("job-1", jobPayload("succeeded"))).toBe("buffered");
+  });
+
+  it("warns when the fallback poll wins the race — no callback arrived", async () => {
+    const warnSpy = vi.spyOn(Logger.prototype, "warn");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(jobPayload("succeeded")));
+
+    const pending = client.waitForJob("job-1");
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    await expect(pending).resolves.toMatchObject({ status: "SUCCEEDED" });
+    expect(warnSpy).toHaveBeenCalledWith(
+      "Job job-1 finished via fallback poll — no callback arrived; check API_PUBLIC_URL / COMPARISON_ENGINE_CALLBACK_SECRET and the engine's callback.last_error",
+    );
+  });
+
+  it("does not warn when the notification wins the race", async () => {
+    const warnSpy = vi.spyOn(Logger.prototype, "warn");
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    const pending = client.waitForJob("job-1");
+    notifications.notify("job-1", jobPayload("succeeded"));
+
+    await expect(pending).resolves.toMatchObject({ status: "SUCCEEDED" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining("fallback poll"));
+  });
+
+  it("callback mode off leaves the poll loop untouched", async () => {
+    delete process.env.API_PUBLIC_URL;
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(jobPayload("succeeded")));
+
+    const pending = client.waitForJob("job-1");
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await expect(pending).resolves.toMatchObject({ status: "SUCCEEDED" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

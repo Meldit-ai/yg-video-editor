@@ -213,6 +213,19 @@ Five more things bite:
   similar". Labels branch on the match value against `PARTIAL_FLOOR` and the
   threshold, never on the verdict string.
 
+**Callback mode is opt-in via `API_PUBLIC_URL`.** Set, the engine POSTs the
+finished job document to `/api/comparisons/engine-callback` (HMAC over the
+raw body; `rawBody: true` in `main.ts` is what gives the route the exact
+bytes to verify) instead of the editor polling for it alone; `waitForJob`
+races that notification against a 60/120/180 s jittered fallback poll capped
+at 4 in flight, so a lost callback costs latency, not correctness. Delivery
+is at-least-once and `notify` is idempotent — a late or duplicate callback is
+buffered for ten minutes then pruned, in case the wait it belongs to has not
+started yet or has already moved on. A 401 makes the engine stop retrying
+that callback, so the fallback poll is the safety net, not an afterthought.
+The engine also sends the dev-tunnel/ngrok interstitial-skip headers, since
+the callback travels through the same tunnel as the editor's own requests.
+
 **Node's request timeout is a wall clock, not an idle timeout.** The 5-minute
 default is measured from the first byte of a request to its last, so a healthy
 2 GB upload dies mid-stream. `apps/api/src/main.ts` raises it to 30 minutes,
