@@ -19,6 +19,7 @@ import { useAuth } from "@/auth/auth-context"
 import { Kbd } from "@/components/command-palette"
 import { EmptyState } from "@/components/empty-state"
 import { MetaDivider, PageHeader } from "@/components/page-header"
+import { RateApprovalQueue } from "@/components/rate-approval-queue"
 import { RoleBadge } from "@/components/status-badge"
 import {
   AlertDialog,
@@ -306,6 +307,18 @@ export function UsersPage() {
           </Button>
         }
       />
+
+      {/* Rate asks live beside the people they concern: deciding one is a
+          judgement about an editor, and their rate card is on this page. */}
+      <section className="space-y-3">
+        <div className="flex items-center gap-3">
+          <h2 className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+            Rate requests
+          </h2>
+          <span aria-hidden className="h-px flex-1 bg-border" />
+        </div>
+        <RateApprovalQueue />
+      </section>
 
       <div className="panel-sheen overflow-hidden rounded-lg border bg-card">
         <div className="flex items-center gap-3 border-b px-2 py-2">

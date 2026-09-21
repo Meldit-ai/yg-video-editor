@@ -307,11 +307,20 @@ export interface DashboardCampaignStat {
   campaignTitle: string
   videos: number
   duplicates: number
+  unique: number
+  unchecked: number
 }
 
 export interface EditorDashboardStats {
   videosUploaded: number
+  /** Labelled DUPLICATE. Read from `uniqueness`, as every other view is. */
   duplicateCount: number
+  uniqueCount: number
+  /**
+   * Not yet reached by a run. Kept apart from the clean count on purpose:
+   * "unchecked" is not "checked and original".
+   */
+  uncheckedCount: number
   /** Null when nothing has been compared yet — not the same as zero. */
   averageDuplicationScore: number | null
   campaignsContributed: number
@@ -559,4 +568,37 @@ export interface MatchGroup {
   reels: MatchedReel[]
   origin: MatchOrigin
   checkedAt: string
+}
+
+/** Mirrors apps/api/src/rates/rates.types.ts. */
+export type RateStatus = "PENDING" | "APPROVED" | "REJECTED"
+
+export interface CampaignRate {
+  id: string
+  campaignId: string
+  campaignTitle: string
+  editorId: string
+  editorName: string
+  amount: number
+  status: RateStatus
+  previousAmount: number | null
+  editorNote: string | null
+  adminNote: string | null
+  decidedByName: string | null
+  decidedAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface EffectiveRate {
+  campaignId: string
+  campaignTitle: string
+  /** What actually pays. Never the pending ask. */
+  effective: number | null
+  source:
+    | "APPROVED_CAMPAIGN_RATE"
+    | "CAMPAIGN_DEFAULT"
+    | "USER_RATE_CARD"
+    | "NONE"
+  pending: CampaignRate | null
 }

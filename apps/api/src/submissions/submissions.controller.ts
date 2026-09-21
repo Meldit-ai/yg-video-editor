@@ -1,8 +1,10 @@
 import {
+  Body,
   Controller,
   Delete,
   Get,
   Param,
+  Patch,
   Query,
   Post,
   UploadedFile,
@@ -11,6 +13,7 @@ import {
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { ListSubmissionsQueryDto } from "./dto/list-submissions-query.dto.js";
+import { RenameSubmissionDto } from "./dto/rename-submission.dto.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { CurrentUser } from "../auth/decorators/current-user.decorator.js";
 import { CampaignAccessGuard } from "../campaigns/guards/campaign-access.guard.js";
@@ -74,6 +77,25 @@ export class SubmissionsController {
    * DELETE /api/campaigns/:campaignId/submissions/:submissionId — soft delete;
    * returns the withdrawn row. The video file itself stays in storage.
    */
+  /**
+   * PATCH /api/campaigns/:campaignId/submissions/:submissionId — rename.
+   * An editor may rename their own; an admin any on the campaign.
+   */
+  @Patch(":submissionId")
+  rename(
+    @Param("campaignId") campaignId: string,
+    @Param("submissionId") submissionId: string,
+    @Body() dto: RenameSubmissionDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ): Promise<VideoSubmissionDto> {
+    return this.submissions.rename(
+      campaignId,
+      submissionId,
+      dto.fileName,
+      user,
+    );
+  }
+
   @Delete(":submissionId")
   remove(
     @Param("campaignId") campaignId: string,

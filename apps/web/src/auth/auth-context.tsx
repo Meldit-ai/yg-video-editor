@@ -22,6 +22,8 @@ export interface AuthContextValue {
   isLoading: boolean
   requestOtp: (mobile: string) => Promise<void>
   verifyOtp: (mobile: string, otp: string) => Promise<void>
+  /** Rename the signed-in account. The session updates in place. */
+  updateProfile: (name: string) => Promise<void>
   logout: () => void
 }
 
@@ -71,14 +73,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(result.user)
   }, [])
 
+  const updateProfile = useCallback(async (name: string) => {
+    // The server returns the updated row, so the header greeting and every
+    // other read of `user` change without a reload.
+    setUser(await api.patch<User>("/auth/me", { name }))
+  }, [])
+
   const logout = useCallback(() => {
     tokenStorage.clear()
     setUser(null)
   }, [])
 
   const value = useMemo<AuthContextValue>(
-    () => ({ user, isLoading, requestOtp, verifyOtp, logout }),
-    [user, isLoading, requestOtp, verifyOtp, logout],
+    () => ({ user, isLoading, requestOtp, verifyOtp, updateProfile, logout }),
+    [user, isLoading, requestOtp, verifyOtp, updateProfile, logout],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

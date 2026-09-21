@@ -28,6 +28,19 @@ export class ListSubmissionsQueryDto {
   })
   sort?: SubmissionSort;
 
+  /**
+   * Narrow to one label. `unchecked` is its own value rather than a null,
+   * because "no run has reached it" is a state someone filters for.
+   *
+   * Preferred over `flagged`, which reads the deprecated overThreshold column.
+   */
+  @IsOptional()
+  @IsIn(["UNIQUE", "PARTIAL", "DUPLICATE", "unchecked"], {
+    message:
+      "uniqueness must be one of: UNIQUE, PARTIAL, DUPLICATE, unchecked",
+  })
+  uniqueness?: "UNIQUE" | "PARTIAL" | "DUPLICATE" | "unchecked";
+
   /** Only videos that met their campaign's accepted-duplication level. */
   @Transform(toBoolean)
   @IsBoolean({ message: "flagged must be true or false" })

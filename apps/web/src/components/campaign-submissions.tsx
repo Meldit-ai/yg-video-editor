@@ -9,10 +9,13 @@ import {
   Trash2Icon,
   TriangleAlertIcon,
   UploadIcon,
+  FilterIcon,
+  PencilIcon,
 } from "lucide-react"
 import { AnimatePresence, motion, useReducedMotion } from "motion/react"
 import { toast } from "sonner"
 
+import { useSearchParams } from "react-router-dom"
 import { useAuth } from "@/auth/auth-context"
 import {
   CampaignComparison,
@@ -34,6 +37,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Input } from "@/components/ui/input"
 import { errorMessage, useCollection } from "@/hooks/use-collection"
 import { useComparison } from "@/hooks/use-comparison"
 import type { SubmissionCheck } from "@/hooks/use-comparison"
@@ -111,8 +115,14 @@ interface CampaignSubmissionsProps {
  */
 export function CampaignSubmissions({ campaignId }: CampaignSubmissionsProps) {
   const { user } = useAuth()
+  // ?uniqueness=UNIQUE|PARTIAL|DUPLICATE|unchecked, so a count on the
+  // dashboard can open exactly the videos it stands for.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const uniqueness = searchParams.get("uniqueness")
   const { items, isLoading, error, refetch } = useCollection<VideoSubmission>(
-    `/campaigns/${campaignId}/submissions`,
+    uniqueness === null
+      ? `/campaigns/${campaignId}/submissions`
+      : `/campaigns/${campaignId}/submissions?uniqueness=${encodeURIComponent(uniqueness)}`,
   )
   // Both roles, but not the same payload: the API redacts an editor's copy
   // down to the verdicts on their own videos, with the counterpart
@@ -355,6 +365,35 @@ export function CampaignSubmissions({ campaignId }: CampaignSubmissionsProps) {
         {(items.length > 0 || isUploading) && uploadButton}
       </div>
 
+      {/* A filter the reader arrived at from elsewhere has to announce itself:
+          a short list with no explanation reads as missing videos. */}
+      {uniqueness !== null && (
+        <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2 text-[12px]">
+          <FilterIcon className="size-3.5 shrink-0 text-muted-foreground" />
+          <span>
+            Showing{" "}
+            <strong className="font-medium">
+              {uniqueness === "unchecked"
+                ? "videos not checked yet"
+                : `${uniqueness.toLowerCase()} videos`}
+            </strong>{" "}
+            only
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="ml-auto h-7 text-[12px]"
+            onClick={() => {
+              const next = new URLSearchParams(searchParams)
+              next.delete("uniqueness")
+              setSearchParams(next, { replace: true })
+            }}
+          >
+            Show all
+          </Button>
+        </div>
+      )}
+
       <input
         ref={inputRef}
         type="file"
@@ -431,6 +470,7 @@ export function CampaignSubmissions({ campaignId }: CampaignSubmissionsProps) {
                   check={comparison.checkFor(submission, parentOf(submission))}
                   onOpenResult={() => setOpenResult(submission)}
                   onRemove={() => setPendingDelete(submission)}
+                  onRenamed={() => void refetch()}
                   onPlaybackError={() =>
                     handlePlaybackError(submission.playbackExpiresAt, src)
                   }
@@ -555,6 +595,7 @@ function SubmissionCard({
   check,
   onOpenResult,
   onRemove,
+  onRenamed,
   onPlaybackError,
 }: {
   submission: VideoSubmission
@@ -564,8 +605,29 @@ function SubmissionCard({
   check: SubmissionCheck
   onOpenResult: () => void
   onRemove: () => void
+  /** Called after a successful rename, so the list re-reads. */
+  onRenamed: () => void
   onPlaybackError: () => void
 }) {
+  const [isRenaming, setRenaming] = useState(false)
+  const [draftName, setDraftName] = useState("")
+
+  async function commitRename() {
+    const trimmed = draftName.trim()
+    setRenaming(false)
+    // Nothing to do: an unchanged or emptied name is a cancel, not an error.
+    if (trimmed.length === 0 || trimmed === submission.fileName) return
+    try {
+      await api.patch<VideoSubmission>(
+        `/campaigns/${submission.campaignId}/submissions/${submission.id}`,
+        { fileName: trimmed },
+      )
+      onRenamed()
+    } catch (caught: unknown) {
+      toast.error(errorMessage(caught))
+    }
+  }
+
   return (
     <div className="overflow-hidden rounded-lg border bg-background">
       {isUnplayable ? (
@@ -599,12 +661,33 @@ function SubmissionCard({
       )}
 
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t px-3 py-2 text-[13px]">
-        <span
-          className="min-w-0 truncate font-medium"
-          title={submission.fileName}
-        >
-          {submission.fileName}
-        </span>
+        {isRenaming ? (
+          <Input
+            autoFocus
+            value={draftName}
+            onChange={(event) => setDraftName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void commitRename()
+              if (event.key === "Escape") setRenaming(false)
+            }}
+            onBlur={() => void commitRename()}
+            aria-label={`Rename ${submission.fileName}`}
+            className="h-7 min-w-0 flex-1 text-[13px]"
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => {
+              setDraftName(submission.fileName)
+              setRenaming(true)
+            }}
+            title={`${submission.fileName} — click to rename`}
+            className="group/name inline-flex min-w-0 items-center gap-1.5 rounded text-left font-medium outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+          >
+            <span className="min-w-0 truncate">{submission.fileName}</span>
+            <PencilIcon className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover/name:opacity-100" />
+          </button>
+        )}
         <MetaDivider />
         <span className="numeric shrink-0 text-muted-foreground">
           {fileSize(submission.sizeBytes)}

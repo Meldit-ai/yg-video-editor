@@ -44,6 +44,23 @@ export class AuthService {
     return { token: await this.jwt.signAsync(payload), user };
   }
 
+  /**
+   * The caller renames their own account.
+   *
+   * Scoped by id from the token rather than anything in the body, so this can
+   * only ever touch the caller — the same rule DashboardService follows.
+   */
+  async updateProfile(id: string, name: string | undefined): Promise<User> {
+    if (name === undefined) {
+      // Nothing to change; return the row rather than writing a no-op.
+      return this.prisma.client.user.findUniqueOrThrow({ where: { id } });
+    }
+    return this.prisma.client.user.update({
+      where: { id },
+      data: { name },
+    });
+  }
+
   private async findActiveUser(mobile: string): Promise<User> {
     const user = await this.prisma.client.user.findUnique({ where: { mobile } });
     // Soft-deleted users are indistinguishable from unknown ones on purpose:

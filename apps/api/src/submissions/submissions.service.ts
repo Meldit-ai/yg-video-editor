@@ -78,6 +78,7 @@ export class SubmissionsService {
       where: {
         ...this.scope(campaignId, user),
         source: query.source ?? SubmissionSource.EDITOR,
+        ...uniquenessFilter(query.uniqueness),
         ...(query.flagged === undefined ? {} : { overThreshold: query.flagged }),
       },
       include: WITH_EDITOR,
@@ -190,6 +191,40 @@ export class SubmissionsService {
   }
 
   /**
+   * Renames a submission. An editor may rename their own; an admin any.
+   *
+   * Display name only — `objectKey` is untouched, so the stored file keeps the
+   * name it was uploaded under and every existing URL keeps working. Nothing
+   * about the comparison is affected: matching reads frames, not names.
+   */
+  async rename(
+    campaignId: string,
+    submissionId: string,
+    fileName: string,
+    user: AuthenticatedUser,
+  ): Promise<VideoSubmissionDto> {
+    const existing = await this.prisma.client.videoSubmission.findFirst({
+      where: { ...this.scope(campaignId, user), id: submissionId },
+      select: { id: true, editorId: true },
+    });
+    if (!existing) {
+      throw new NotFoundException(`Submission ${submissionId} not found`);
+    }
+    // Belt and braces, as in `remove`: `scope` already hides other editors'
+    // rows, so this only fires if that scoping is ever loosened.
+    if (user.role !== Role.ADMIN && existing.editorId !== user.id) {
+      throw new ForbiddenException("You can only rename your own submissions");
+    }
+
+    const row = await this.prisma.client.videoSubmission.update({
+      where: { id: submissionId },
+      data: { fileName },
+      include: WITH_EDITOR,
+    });
+    return this.toDto(row);
+  }
+
+  /**
    * The `where` every read starts from: this campaign, not soft-deleted, and
    * — unless the caller is an admin — only this editor's own rows.
    */
@@ -234,6 +269,20 @@ export class SubmissionsService {
       playbackExpiresAt: new Date(Date.now() + PLAYBACK_URL_TTL_SECONDS * 1000),
     };
   }
+}
+
+/**
+ * `where` fragment for the uniqueness filter.
+ *
+ * `unchecked` maps to a null label rather than a value, which is why this is
+ * not a straight pass-through: the API takes a word so a URL can carry it.
+ */
+function uniquenessFilter(
+  value: "UNIQUE" | "PARTIAL" | "DUPLICATE" | "unchecked" | undefined,
+): Prisma.VideoSubmissionWhereInput {
+  if (value === undefined) return {};
+  if (value === "unchecked") return { uniqueness: null };
+  return { uniqueness: value as Uniqueness };
 }
 
 /**
