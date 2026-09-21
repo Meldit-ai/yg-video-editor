@@ -1,9 +1,18 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from "@nestjs/common";
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+  UseGuards,
+} from "@nestjs/common";
 import { Role } from "@repo/database";
 import { Roles } from "../auth/decorators/roles.decorator.js";
 import { CampaignAccessGuard } from "../campaigns/guards/campaign-access.guard.js";
 import { RunMatchesDto } from "./dto/run-matches.dto.js";
 import { MatchesService } from "./matches.service.js";
+import { MATCH_GROUP_SORTS, type MatchGroupSort } from "./matches.types.js";
 import type { MatchGroupDto, MatchRunResultDto } from "./matches.types.js";
 
 /**
@@ -29,8 +38,16 @@ export class MatchesController {
   @Get()
   findAll(
     @Param("campaignId") campaignId: string,
+    @Query("sort") sort?: string,
   ): Promise<MatchGroupDto[]> {
-    return this.matches.findGroups(campaignId);
+    // An unknown sort falls back rather than 400s: this is a display
+    // preference in a URL, not something worth failing a page load over.
+    const chosen = (MATCH_GROUP_SORTS as readonly string[]).includes(
+      sort ?? "",
+    )
+      ? (sort as MatchGroupSort)
+      : "recent";
+    return this.matches.findGroups(campaignId, chosen);
   }
 
   /**

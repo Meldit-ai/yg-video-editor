@@ -12,9 +12,12 @@ import {
   type FrameOverlap,
 } from "./matches.rules.js";
 import type {
+ 
   CrossPlatformMatchDto,
   MatchGroupDto,
   MatchRunResultDto,
+  ReelEngagement,
+  MatchGroupSort,
 } from "./matches.types.js";
 
 /**
@@ -192,7 +195,10 @@ export class MatchesService {
    * repeats the edit once per reel while hiding that they are all the same
    * video. A group shows the edit once and every reel carrying it together.
    */
-  async findGroups(campaignId: string): Promise<MatchGroupDto[]> {
+  async findGroups(
+    campaignId: string,
+    sort: MatchGroupSort = "recent",
+  ): Promise<MatchGroupDto[]> {
     const rows = await this.prisma.client.crossPlatformMatch.findMany({
       where: { campaignId, active: true },
       include: {
@@ -205,7 +211,14 @@ export class MatchesService {
             editor: { select: { name: true } },
           },
         },
-        reel: { select: { username: true, permalink: true, mediaUrl: true } },
+        reel: {
+          select: {
+            username: true,
+            permalink: true,
+            mediaUrl: true,
+            postCounts: true,
+          },
+        },
       },
       orderBy: [{ uploadedAt: "desc" }, { postedAt: "asc" }],
     });
@@ -217,7 +230,7 @@ export class MatchesService {
       bySubmission.set(row.submissionId, bucket);
     }
 
-    return Promise.all(
+    const groups = await Promise.all(
       [...bySubmission.values()].map(async (group) => {
         const first = group[0]!;
         return {
@@ -238,7 +251,11 @@ export class MatchesService {
             reelUrl: row.reel.mediaUrl,
             origin: row.origin,
             contentHash: row.contentHash,
+            engagement: readEngagement(row.reel.postCounts),
           })),
+          totalEngagement: sumEngagement(
+            group.map((row) => readEngagement(row.reel.postCounts)),
+          ),
           // One reel predating the edit is enough to say the footage was out
           // there first, whatever the others did.
           origin: groupOrigin(group.map((row) => row.origin)),
@@ -246,6 +263,8 @@ export class MatchesService {
         };
       }),
     );
+
+    return sortGroups(groups, sort);
   }
 
   private async hashSubmissions(campaignId: string): Promise<number> {
@@ -680,4 +699,106 @@ export function groupOrigin(origins: readonly MatchOrigin[]): MatchOrigin {
   if (origins.includes(MatchOrigin.REEL)) return MatchOrigin.REEL;
   if (origins.includes(MatchOrigin.EDITOR)) return MatchOrigin.EDITOR;
   return MatchOrigin.UNKNOWN;
+}
+
+/**
+ * Reads the tracker's `postCounts` blob into fixed fields.
+ *
+ * The blob is the tracker's shape, not ours, and older posts carry fewer keys
+ * — so every field is nullable and a missing one stays null rather than
+ * becoming a zero somebody would later add up.
+ */
+export function readEngagement(raw: unknown): ReelEngagement | null {
+  if (raw === null || typeof raw !== "object") return null;
+  const counts = raw as Record<string, unknown>;
+  const num = (key: string): number | null => {
+    const value = counts[key];
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  };
+
+  const views = num("views");
+  const reach = num("reach");
+  // Reach is not the same measure as views, but for "how far did this go" a
+  // stand-in beats a blank — flagged so the UI can say which it is showing.
+  const viewsFromReach = views === null && reach !== null;
+
+  const engagement: ReelEngagement = {
+    views: views ?? reach,
+    likes: num("likes"),
+    comments: num("comments"),
+    // The tracker sends reshares under either name depending on platform.
+    shares: num("reshare_count") ?? num("repost_count") ?? num("shares"),
+    viewsFromReach,
+  };
+  // Nothing usable in the blob at all.
+  const hasAny =
+    engagement.views !== null ||
+    engagement.likes !== null ||
+    engagement.comments !== null ||
+    engagement.shares !== null;
+  return hasAny ? engagement : null;
+}
+
+/**
+ * Adds up a group's reels.
+ *
+ * A null field stays null only when *every* reel was null: summing three
+ * posts of which one reported no likes should still give the likes of the
+ * other two, not nothing.
+ */
+export function sumEngagement(
+  parts: readonly (ReelEngagement | null)[],
+): MatchGroupDto["totalEngagement"] {
+  const counted = parts.filter((part): part is ReelEngagement => part !== null);
+  const add = (pick: (part: ReelEngagement) => number | null): number | null => {
+    const values = counted
+      .map(pick)
+      .filter((value): value is number => value !== null);
+    return values.length === 0
+      ? null
+      : values.reduce((total, value) => total + value, 0);
+  };
+  return {
+    views: add((part) => part.views),
+    likes: add((part) => part.likes),
+    comments: add((part) => part.comments),
+    shares: add((part) => part.shares),
+    // True only if every counted reel was standing in reach for views, so the
+    // caveat is not shown when most of the number is real view counts.
+    viewsFromReach:
+      counted.length > 0 && counted.every((part) => part.viewsFromReach),
+    countedReels: counted.length,
+    totalReels: parts.length,
+  };
+}
+
+/**
+ * Orders the groups.
+ *
+ * "Which edit performed best" is the question the whole match pipeline exists
+ * to answer, so reach is a first-class ordering rather than something the
+ * reader sorts by hand. A group with no counts sorts last in every engagement
+ * order — unknown is not zero, but it cannot lead a ranking either.
+ */
+function sortGroups(
+  groups: readonly MatchGroupDto[],
+  sort: MatchGroupSort,
+): MatchGroupDto[] {
+  if (sort === "recent") return [...groups];
+  const value = (group: MatchGroupDto): number | null => {
+    const total = group.totalEngagement;
+    if (sort === "views") return total.views;
+    if (sort === "likes") return total.likes;
+    if (sort === "reels") return group.reels.length;
+    return null;
+  };
+  return [...groups].sort((left, right) => {
+    const a = value(left);
+    const b = value(right);
+    // Nulls last, whichever way the comparison would otherwise fall.
+    if (a === null && b === null) return 0;
+    if (a === null) return 1;
+    if (b === null) return -1;
+    return b - a;
+  });
 }

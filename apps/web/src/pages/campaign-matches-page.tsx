@@ -5,6 +5,7 @@ import {
   ExternalLinkIcon,
   Loader2Icon,
   SparklesIcon,
+  EyeIcon,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -14,12 +15,15 @@ import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { errorMessage } from "@/hooks/use-collection"
 import { api } from "@/lib/api"
-import { fullDate } from "@/lib/format"
+import { compact, fullDate } from "@/lib/format"
+import { cn } from "@/lib/utils"
+import { MATCH_GROUP_SORTS, type MatchGroupSort } from "@/lib/types"
 import type {
   Campaign,
   MatchedReel,
   MatchGroup,
   MatchRunResult,
+  ReelEngagement,
 } from "@/lib/types"
 
 /** Reels read per run. Each is a download and a decode, so a run is bounded. */
@@ -38,13 +42,16 @@ export function CampaignMatchesPage() {
   const [campaign, setCampaign] = useState<Campaign | null>(null)
   const [groups, setGroups] = useState<MatchGroup[] | null>(null)
   const [isRunning, setRunning] = useState(false)
+  // Most viewed first by default: "which edit performed best" is the question
+  // this whole pipeline exists to answer.
+  const [sort, setSort] = useState<MatchGroupSort>("views")
 
   useEffect(() => {
     if (id === undefined) return
     let cancelled = false
     Promise.all([
       api.get<Campaign>(`/campaigns/${id}`),
-      api.get<MatchGroup[]>(`/campaigns/${id}/matches`),
+      api.get<MatchGroup[]>(`/campaigns/${id}/matches?sort=${sort}`),
     ])
       .then(([one, found]) => {
         if (cancelled) return
@@ -57,7 +64,7 @@ export function CampaignMatchesPage() {
     return () => {
       cancelled = true
     }
-  }, [id])
+  }, [id, sort])
 
   async function run() {
     setRunning(true)
@@ -89,6 +96,13 @@ export function CampaignMatchesPage() {
     (total, group) => total + group.reels.length,
     0,
   )
+
+  // Null rather than 0 when no group reported anything: "we do not know" is
+  // not "nobody watched it".
+  const campaignViews =
+    groups === null || groups.every((g) => g.totalEngagement.views === null)
+      ? null
+      : groups.reduce((total, g) => total + (g.totalEngagement.views ?? 0), 0)
 
   return (
     <div className="space-y-5">
@@ -126,6 +140,40 @@ export function CampaignMatchesPage() {
           </Button>
         }
       />
+
+      {/* The campaign's whole reach in one line, then the ordering. Without
+          the total, 52 separate numbers never add up to an answer. */}
+      {groups !== null && groups.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3">
+          {campaignViews !== null && (
+            <div className="flex items-baseline gap-2 rounded-lg border px-3 py-2">
+              <span className="numeric text-xl leading-none font-semibold">
+                {compact(campaignViews)}
+              </span>
+              <span className="text-[12px] text-muted-foreground">
+                views across every matched edit
+              </span>
+            </div>
+          )}
+          <div className="ml-auto flex items-center gap-1 rounded-md border p-0.5">
+            {MATCH_GROUP_SORTS.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => setSort(option.value)}
+                className={cn(
+                  "rounded px-2.5 py-1 text-[12px] transition-colors",
+                  sort === option.value
+                    ? "bg-muted text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {groups === null ? (
         <div className="space-y-2">
@@ -168,7 +216,58 @@ function GroupRow({ group }: { group: MatchGroup }) {
             posted before hand-in
           </span>
         )}
+
+        {/* What this edit earned, added across every reel carrying it. The
+            reason the matching exists: one cut posted by nine accounts is one
+            piece of work with nine sets of counts. */}
+        <span className="ml-auto flex shrink-0 items-baseline gap-1.5">
+          {group.totalEngagement.views === null ? (
+            <span className="text-[12px] text-muted-foreground">
+              No counts yet
+            </span>
+          ) : (
+            <>
+              <EyeIcon className="size-3.5 self-center text-muted-foreground" />
+              <span className="numeric text-[15px] font-semibold">
+                {compact(group.totalEngagement.views)}
+              </span>
+              <span className="text-[11px] tracking-wide text-muted-foreground uppercase">
+                {group.totalEngagement.viewsFromReach ? "reach" : "views"}
+              </span>
+            </>
+          )}
+        </span>
       </div>
+
+      {/* The rest of the totals, and how much of the group they cover. */}
+      {group.totalEngagement.countedReels > 0 && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted-foreground">
+          {group.totalEngagement.likes !== null && (
+            <span className="numeric">
+              {compact(group.totalEngagement.likes)} likes
+            </span>
+          )}
+          {group.totalEngagement.comments !== null && (
+            <span className="numeric">
+              {compact(group.totalEngagement.comments)} comments
+            </span>
+          )}
+          {group.totalEngagement.shares !== null && (
+            <span className="numeric">
+              {compact(group.totalEngagement.shares)} shares
+            </span>
+          )}
+          {/* Said plainly when the total does not cover the whole group,
+              rather than letting it read as complete. */}
+          {group.totalEngagement.countedReels <
+            group.totalEngagement.totalReels && (
+            <span>
+              from {group.totalEngagement.countedReels} of{" "}
+              {group.totalEngagement.totalReels} reels
+            </span>
+          )}
+        </div>
+      )}
 
       <div className="mt-2.5 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
         <Panel
@@ -207,6 +306,7 @@ function ReelPanel({ reel }: { reel: MatchedReel }) {
       isOriginal={reel.origin === "REEL"}
       link={reel.permalink}
       videoUrl={reel.reelUrl}
+      engagement={reel.engagement}
     />
   )
 }
@@ -218,6 +318,7 @@ function Panel({
   isOriginal,
   link,
   videoUrl,
+  engagement,
 }: {
   label: string
   who: string
@@ -226,6 +327,8 @@ function Panel({
   link?: string | null
   /** The video itself, so a claimed match can be checked by watching it. */
   videoUrl: string
+  /** What this one post earned. Absent on the edit's own panel. */
+  engagement?: ReelEngagement | null
 }) {
   const [isUnplayable, setUnplayable] = useState(false)
 
@@ -271,6 +374,44 @@ function Panel({
         <p className="text-[12px] text-muted-foreground">
           {when === null ? "Date unknown" : fullDate(when)}
         </p>
+
+        {/* What this individual post did, next to who posted it — the reason
+            one account is worth sharing to and another is not. */}
+        {engagement !== undefined && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 border-t pt-1.5 text-[12px]">
+            {engagement === null ? (
+              <span className="text-muted-foreground">No counts</span>
+            ) : (
+              <>
+                {engagement.views !== null && (
+                  <span
+                    className="numeric font-medium"
+                    title={
+                      engagement.viewsFromReach
+                        ? "Reach, shown because this post reports no view count"
+                        : "Views"
+                    }
+                  >
+                    {compact(engagement.views)}
+                    <span className="ml-1 font-normal text-muted-foreground">
+                      {engagement.viewsFromReach ? "reach" : "views"}
+                    </span>
+                  </span>
+                )}
+                {engagement.likes !== null && (
+                  <span className="numeric text-muted-foreground">
+                    {compact(engagement.likes)} likes
+                  </span>
+                )}
+                {engagement.shares !== null && engagement.shares > 0 && (
+                  <span className="numeric text-muted-foreground">
+                    {compact(engagement.shares)} shares
+                  </span>
+                )}
+              </>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )

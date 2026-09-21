@@ -542,6 +542,16 @@ export interface MatchRunResult {
 }
 
 /** One reel carrying an edit's footage, inside a match group. */
+/** What one post earned. Every field is nullable: the tracker's payload varies. */
+export interface ReelEngagement {
+  views: number | null
+  likes: number | null
+  comments: number | null
+  shares: number | null
+  /** True when `views` is standing in for a missing view count. */
+  viewsFromReach: boolean
+}
+
 export interface MatchedReel {
   reelId: string
   username: string
@@ -551,6 +561,8 @@ export interface MatchedReel {
   origin: MatchOrigin
   /** Set when this reel is the very same file as the edit. */
   contentHash: string | null
+  /** What this individual post earned. Null when the tracker sent nothing. */
+  engagement: ReelEngagement | null
 }
 
 /**
@@ -566,9 +578,24 @@ export interface MatchGroup {
   playbackUrl: string
   /** Oldest post first. */
   reels: MatchedReel[]
+  /** Everything the reels carrying this edit earned, added up. */
+  totalEngagement: ReelEngagement & {
+    countedReels: number
+    totalReels: number
+  }
   origin: MatchOrigin
   checkedAt: string
 }
+
+/** How the matched edits are ordered. */
+export const MATCH_GROUP_SORTS = [
+  { value: "views", label: "Most viewed" },
+  { value: "likes", label: "Most liked" },
+  { value: "reels", label: "Most posted" },
+  { value: "recent", label: "Newest" },
+] as const
+
+export type MatchGroupSort = (typeof MATCH_GROUP_SORTS)[number]["value"]
 
 /** Mirrors apps/api/src/rates/rates.types.ts. */
 export type RateStatus = "PENDING" | "APPROVED" | "REJECTED"

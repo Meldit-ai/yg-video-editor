@@ -65,3 +65,15 @@ export function fileSize(bytes: number): string {
   const gb = mb / 1024
   return `${gb.toFixed(gb < 10 ? 1 : 0)} GB`
 }
+
+/**
+ * 12400 -> 12.4K, 5139611 -> 5.1M.
+ *
+ * View counts are read at a glance and compared against each other, so the
+ * magnitude matters far more than the last four digits.
+ */
+export function compact(value: number): string {
+  if (value < 1_000) return String(value)
+  if (value < 1_000_000) return `${(value / 1_000).toFixed(1)}K`
+  return `${(value / 1_000_000).toFixed(1)}M`
+}

@@ -70,6 +70,23 @@ export interface MatchRunResultDto {
 }
 
 /** One reel carrying an edit's footage, inside a match group. */
+/**
+ * What one post earned on Instagram.
+ *
+ * Every field is optional because it comes from the tracker's own payload and
+ * older reels carry fewer of them. `views` falls back to `reach` when a post
+ * reports only the latter — they are not the same measure, but for ranking
+ * "how far did this travel" the distinction matters less than having nothing.
+ */
+export interface ReelEngagement {
+  views: number | null;
+  likes: number | null;
+  comments: number | null;
+  shares: number | null;
+  /** True when `views` is standing in for a missing view count. */
+  viewsFromReach: boolean;
+}
+
 export interface MatchedReelDto {
   reelId: string;
   username: string;
@@ -80,6 +97,9 @@ export interface MatchedReelDto {
   origin: MatchOrigin;
   /** Set when this reel is the very same file as the edit. */
   contentHash: string | null;
+
+  /** What this individual post earned. Null when the tracker sent no counts. */
+  engagement: ReelEngagement | null;
 }
 
 /**
@@ -90,6 +110,16 @@ export interface MatchedReelDto {
  * Every reel in a group is an exact match to the edit — the group is not a
  * ranking, and there is no weaker member.
  */
+/** How the matched edits are ordered. */
+export const MATCH_GROUP_SORTS = [
+  "recent",
+  "views",
+  "likes",
+  "reels",
+] as const;
+
+export type MatchGroupSort = (typeof MATCH_GROUP_SORTS)[number];
+
 export interface MatchGroupDto {
   submissionId: string;
   fileName: string;
@@ -99,6 +129,19 @@ export interface MatchGroupDto {
 
   /** Oldest post first, so the earliest publisher reads at the top. */
   reels: MatchedReelDto[];
+
+  /**
+   * Everything the reels carrying this edit earned, added up.
+   *
+   * The number the campaign is actually run for: one cut posted by nine
+   * accounts is one piece of work with nine sets of counts, and the sum is
+   * what says whether it was worth making.
+   */
+  totalEngagement: ReelEngagement & {
+    /** Reels that reported any counts, out of the group. */
+    countedReels: number;
+    totalReels: number;
+  };
 
   /**
    * Which side published first, taken over the whole group: REEL when any reel

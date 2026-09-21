@@ -23,7 +23,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { errorMessage } from "@/hooks/use-collection"
 import { api } from "@/lib/api"
-import { fullDate, shortDate } from "@/lib/format"
+import { fullDate, shortDate, compact } from "@/lib/format"
 import type {
   Campaign,
   CampaignReel,
@@ -393,6 +393,17 @@ function ReelGroup({
 }) {
   const [isOpen, setOpen] = useState(false)
 
+  // Null, not 0, when nothing reported: "unknown" is not "nobody watched".
+  const viewsOf = (reel: CampaignReel): number | null =>
+    reel.postCounts?.views ?? reel.postCounts?.reach ?? null
+  const counted = [head, ...copies]
+    .map(viewsOf)
+    .filter((value): value is number => value !== null)
+  const groupViews =
+    counted.length === 0
+      ? null
+      : counted.reduce((total, value) => total + value, 0)
+
   return (
     <li className="rounded-lg border">
       <div className="flex flex-wrap items-center gap-2 px-3 py-2">
@@ -402,6 +413,21 @@ function ReelGroup({
         <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
           @{head.username}
         </span>
+        {/* What this cut earned across every account that posted it — the
+            same footage in nine places is one piece of work with nine sets
+            of counts, and the sum is what says how far it travelled. */}
+        {groupViews !== null && (
+          <span
+            className="numeric shrink-0 text-[12px] text-muted-foreground"
+            title={
+              copies.length === 0
+                ? "Views on this reel"
+                : `Views across all ${copies.length + 1} posts of this cut`
+            }
+          >
+            {compact(groupViews)} views
+          </span>
+        )}
         <ScoreBadge reel={head} />
         {copies.length > 0 && (
           <button
@@ -547,13 +573,6 @@ function ScoreBadge({
       className="shrink-0"
     />
   )
-}
-
-/** 12400 -> 12.4K, because a view count is read at a glance. */
-function compact(value: number): string {
-  if (value < 1_000) return String(value)
-  if (value < 1_000_000) return `${(value / 1_000).toFixed(1)}K`
-  return `${(value / 1_000_000).toFixed(1)}M`
 }
 
 function ReelsSkeleton() {
