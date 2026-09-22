@@ -128,6 +128,9 @@ export class MatchesService {
     const unhashedReels = await this.prisma.client.campaignReel.count({
       where: { campaignId, active: true, contentHash: null },
     });
+    const totalReels = await this.prisma.client.campaignReel.count({
+      where: { campaignId, active: true },
+    });
 
     this.logger.log(
       `Match run on "${campaign.title}": read ${hashedSubmissions} upload(s) and ${hashedReels} reel(s), ${matches.length} match(es), ${unhashedReels} reel(s) still to read`,
@@ -138,6 +141,8 @@ export class MatchesService {
       hashedSubmissions,
       hashedReels,
       unhashedReels,
+      totalReels,
+      trackerLinked: campaign.trackerCampaignId !== null,
       matchCount: matches.length,
       matches,
     };

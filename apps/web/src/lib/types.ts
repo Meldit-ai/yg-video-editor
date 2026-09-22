@@ -536,6 +536,10 @@ export interface MatchRunResult {
   hashedReels: number
   /** Reels still without a hash, so the caller knows to run again. */
   unhashedReels: number
+  /** Reels on the campaign at all. Zero means there was nothing to match. */
+  totalReels: number
+  /** Whether a tracker campaign is linked — reels are pulled from it. */
+  trackerLinked: boolean
   /** Edits that matched at least one reel. */
   matchCount: number
   matches: MatchGroup[]

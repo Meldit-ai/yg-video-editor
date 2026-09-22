@@ -6,6 +6,7 @@ import {
   Loader2Icon,
   SparklesIcon,
   EyeIcon,
+  TriangleAlertIcon,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -74,17 +75,27 @@ export function CampaignMatchesPage() {
         { reelLimit: REEL_BATCH },
       )
       setGroups(result.matches)
-      toast.success(
-        result.matchCount === 1
-          ? "1 edit matched"
-          : `${result.matchCount} edits matched`,
-        {
-          description:
-            result.unhashedReels > 0
-              ? `${result.unhashedReels} reels still to check — run again to continue.`
-              : "Every reel on this campaign has been checked.",
-        },
-      )
+      if (result.totalReels === 0) {
+        // Nothing was compared, so "0 matches" would be a finding this run did
+        // not make. Say why, and what to do about it.
+        toast.warning("Nothing to match against", {
+          description: result.trackerLinked
+            ? "No reels have been imported for this campaign yet. Import them from the reels page, then check again."
+            : "This campaign is not linked to a tracker campaign, so it has no reels. Link one in the campaign settings.",
+        })
+      } else {
+        toast.success(
+          result.matchCount === 1
+            ? "1 edit matched"
+            : `${result.matchCount} edits matched`,
+          {
+            description:
+              result.unhashedReels > 0
+                ? `${result.unhashedReels} reels still to check — run again to continue.`
+                : `Checked against ${result.totalReels.toLocaleString()} reels.`,
+          },
+        )
+      }
     } catch (caught) {
       toast.error(errorMessage(caught))
     } finally {
@@ -140,6 +151,19 @@ export function CampaignMatchesPage() {
           </Button>
         }
       />
+
+      {/* Said before the button is pressed, not only after: a run with nothing
+          to match against comes back "0 matches", which reads exactly like a
+          real check that found none. */}
+      {campaign !== null && campaign.trackerCampaignId === null && (
+        <div className="flex items-start gap-2 rounded-lg border border-dashed px-3 py-2.5 text-[13px]">
+          <TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-warning" />
+          <p>
+            This campaign is not linked to a tracker campaign, so it has no
+            reels to match against. Link one in the campaign settings first.
+          </p>
+        </div>
+      )}
 
       {/* The campaign's whole reach in one line, then the ordering. Without
           the total, 52 separate numbers never add up to an answer. */}

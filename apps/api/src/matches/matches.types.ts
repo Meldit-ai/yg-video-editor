@@ -64,6 +64,17 @@ export interface MatchRunResultDto {
   hashedReels: number;
   /** Reels on the campaign that still have no hash, after this run. */
   unhashedReels: number;
+  /**
+   * Reels stored on the campaign at all.
+   *
+   * Zero means there was nothing to match against — either the campaign has no
+   * tracker campaign linked, or its reels have not been imported. Without this
+   * a run over an empty campaign reports "0 matches" exactly as a real check
+   * that found none does, and the two mean very different things.
+   */
+  totalReels: number;
+  /** Whether a tracker campaign is linked, which is what reels are pulled from. */
+  trackerLinked: boolean;
   /** Edits that matched at least one reel. */
   matchCount: number;
   matches: MatchGroupDto[];
