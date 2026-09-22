@@ -33,6 +33,7 @@ import {
 } from "@/lib/types"
 import {
   groupDuplicates,
+  isCopy,
   type DuplicateGroup,
 } from "@/lib/duplicate-groups"
 import { cn } from "@/lib/utils"
@@ -45,6 +46,25 @@ const SORTS = [
 ] as const
 
 type Sort = (typeof SORTS)[number]["value"]
+
+/**
+ * How the feed arranges what it holds.
+ *
+ * "All" is the default: every video is a card, which is what someone scanning
+ * a campaign wants. "Grouped" folds copies under the original for reading the
+ * duplication itself. Neither hides anything — the same videos are on the page
+ * either way.
+ */
+const FEED_VIEWS = [
+  { value: "all", label: "All videos", hint: "Every video as its own card" },
+  {
+    value: "grouped",
+    label: "Grouped",
+    hint: "Copies folded under the video they were measured against",
+  },
+] as const
+
+type FeedView = (typeof FEED_VIEWS)[number]["value"]
 
 function feedPath(campaignId: string, sort: Sort, flaggedOnly: boolean): string {
   const params = new URLSearchParams({ sort })
@@ -68,6 +88,10 @@ export function CampaignFeed({ campaign }: { campaign: Campaign }) {
   // several inline reflowed the grid and buried the original a copy belonged
   // to, which is the one thing this view exists to answer.
   const [openGroupId, setOpenGroupId] = useState<string | null>(null)
+  // Grouped folds copies under the original; all shows every video as its own
+  // card. Same data and the same selection either way — only the arrangement
+  // changes, so switching never loses what is ticked.
+  const [view, setView] = useState<FeedView>("all")
   const reduceMotion = useReducedMotion()
 
   const { items, isLoading, error, refetch } = useCollection<VideoSubmission>(
@@ -120,6 +144,23 @@ export function CampaignFeed({ campaign }: { campaign: Campaign }) {
     })
   }, [items, sort])
 
+  // The same groups, flattened: each original followed immediately by the
+  // videos taken from it. Derived from `groups` rather than re-sorting `items`
+  // so both views order identically and a copy never drifts away from the
+  // original it was measured against.
+  // "Duplicate of <name>" in the flat view, where there is no original pinned
+  // above the card to point at. A parent outside this page resolves to nothing
+  // and the line falls back to "another submission".
+  const nameById = useMemo(
+    () => new Map(items.map((item) => [item.id, item.fileName])),
+    [items],
+  )
+
+  const flat = useMemo(
+    () => groups.flatMap((group) => [group.head, ...group.children]),
+    [groups],
+  )
+
   const checkedCount = items.filter((item) => item.uniqueness !== null).length
 
   return (
@@ -166,6 +207,35 @@ export function CampaignFeed({ campaign }: { campaign: Campaign }) {
           ))}
         </div>
 
+        {/* Arrangement, not filtering: both views hold every video, so this
+            never changes what is on the page — only whether copies sit under
+            their original or stand as cards of their own. */}
+        <div className="flex items-center gap-1 rounded-md border p-0.5">
+          {FEED_VIEWS.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => setView(option.value)}
+              title={option.hint}
+              className={cn(
+                "relative rounded px-2.5 py-1 text-[12px] transition-colors",
+                view === option.value
+                  ? "text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {view === option.value && (
+                <motion.span
+                  layoutId="campaign-feed-view"
+                  transition={{ duration: reduceMotion ? 0 : 0.18 }}
+                  className="absolute inset-0 rounded bg-muted"
+                />
+              )}
+              <span className="relative">{option.label}</span>
+            </button>
+          ))}
+        </div>
+
         <Button
           variant={flaggedOnly ? "secondary" : "outline"}
           size="sm"
@@ -179,7 +249,12 @@ export function CampaignFeed({ campaign }: { campaign: Campaign }) {
         <span className="ml-auto text-[12px] text-muted-foreground">
           {isLoading
             ? null
-            : `${checkedCount} of ${items.length} checked against ${campaign.duplicationThreshold}%`}
+            : view === "grouped"
+              ? // Said plainly, because the grid shows 32 cards while the
+                // campaign holds 97 videos — without this the two numbers
+                // look like a bug.
+                `${groups.length} of ${items.length} shown · ${checkedCount} checked against ${campaign.duplicationThreshold}%`
+              : `${checkedCount} of ${items.length} checked against ${campaign.duplicationThreshold}%`}
         </span>
       </div>
 
@@ -210,17 +285,36 @@ export function CampaignFeed({ campaign }: { campaign: Campaign }) {
             visibleSelected.length > 0 && "pb-20",
           )}
         >
-          {groups.map((group) => (
-            <FeedGroup
-              key={group.head.id}
-              head={group.head}
-              copies={group.children}
-              threshold={campaign.duplicationThreshold}
-              selected={selected}
-              onToggle={toggle}
-              onCompare={() => setOpenGroupId(group.head.id)}
-            />
-          ))}
+          {view === "grouped"
+            ? groups.map((group) => (
+                <FeedGroup
+                  key={group.head.id}
+                  head={group.head}
+                  copies={group.children}
+                  threshold={campaign.duplicationThreshold}
+                  selected={selected}
+                  onToggle={toggle}
+                  onCompare={() => setOpenGroupId(group.head.id)}
+                />
+              ))
+            : flat.map((submission) => (
+                <li key={submission.id}>
+                  <FeedCard
+                    submission={submission}
+                    threshold={campaign.duplicationThreshold}
+                    parentName={
+                      submission.parentId === null
+                        ? null
+                        : (nameById.get(submission.parentId) ?? null)
+                    }
+                    isSelected={selected.has(submission.id)}
+                    onToggle={() => toggle(submission.id)}
+                    // A copy in the flat list has no original pinned above it,
+                    // so it names what it copied on the card itself.
+                    role={isCopy(submission) ? "copy" : "head"}
+                  />
+                </li>
+              ))}
         </ul>
       )}
 
