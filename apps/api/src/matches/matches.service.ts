@@ -12,6 +12,7 @@ import {
   type FrameOverlap,
 } from "./matches.rules.js";
 import type {
+  EditorPostedVideoDto,
  
   CrossPlatformMatchDto,
   MatchGroupDto,
@@ -146,6 +147,90 @@ export class MatchesService {
       matchCount: matches.length,
       matches,
     };
+  }
+
+  /**
+   * One editor's own videos that reached Instagram, and what they earned.
+   *
+   * Scoped by `editorId` in the `where` rather than filtered afterwards, so it
+   * can never return someone else's work — the same rule SubmissionsService
+   * follows. Computes nothing: this reads what a run already found.
+   *
+   * Returns a shape that says nothing about how the match was made. That is
+   * deliberate and the reason this does not reuse findGroups.
+   */
+  async findForEditor(
+    campaignId: string,
+    editorId: string,
+  ): Promise<EditorPostedVideoDto[]> {
+    const rows = await this.prisma.client.crossPlatformMatch.findMany({
+      where: {
+        campaignId,
+        active: true,
+        submission: { editorId, active: true },
+      },
+      include: {
+        submission: {
+          select: {
+            fileName: true,
+            objectKey: true,
+            contentType: true,
+            createdAt: true,
+          },
+        },
+        reel: { select: { username: true, permalink: true, postCounts: true } },
+      },
+      orderBy: [{ uploadedAt: "desc" }, { postedAt: "asc" }],
+    });
+
+    const bySubmission = new Map<string, typeof rows>();
+    for (const row of rows) {
+      const bucket = bySubmission.get(row.submissionId) ?? [];
+      bucket.push(row);
+      bySubmission.set(row.submissionId, bucket);
+    }
+
+    const groups = await Promise.all(
+      [...bySubmission.values()].map(async (group) => {
+        const first = group[0]!;
+        const engagements = group.map((row) =>
+          readEngagement(row.reel.postCounts),
+        );
+        const summed = sumEngagement(engagements);
+        return {
+          submissionId: first.submissionId,
+          fileName: first.submission.fileName,
+          uploadedAt: first.uploadedAt,
+          playbackUrl: await this.storage.presignPlaybackUrl(
+            first.submission.objectKey,
+            first.submission.fileName,
+            first.submission.contentType,
+          ),
+          posts: group.map((row, index) => ({
+            username: row.reel.username,
+            permalink: row.reel.permalink,
+            postedAt: row.postedAt,
+            engagement: engagements[index] ?? null,
+          })),
+          totalEngagement: (({ countedReels, totalReels, ...metrics }) => ({
+            // Spread the metrics so one added to ReelEngagement reaches the
+            // editor view without a second edit, but drop the reel-counting
+            // fields: "posts" is the editor's word, and countedReels would
+            // put the tracker's vocabulary in a payload that avoids it.
+            ...metrics,
+            countedPosts: countedReels,
+            totalPosts: totalReels,
+          }))(summed),
+        };
+      }),
+    );
+
+    // Best performing first: an editor opening this wants to know which of
+    // their cuts travelled, not which was handed in most recently.
+    return groups.sort(
+      (left, right) =>
+        (right.totalEngagement.views ?? -1) - (left.totalEngagement.views ?? -1),
+    );
   }
 
   /** The stored matches, newest upload first. Computes nothing. */
@@ -727,12 +812,33 @@ export function readEngagement(raw: unknown): ReelEngagement | null {
   // stand-in beats a blank — flagged so the UI can say which it is showing.
   const viewsFromReach = views === null && reach !== null;
 
+  const likes = num("likes");
+  const comments = num("comments");
+  const saves = num("saves");
+  // The tracker sends reshares under either name depending on platform.
+  const shares = num("reshare_count") ?? num("repost_count") ?? num("shares");
+  const shownViews = views ?? reach;
+
+  // What people did, rather than how many saw it. Summed from the parts that
+  // reported, so one missing field does not wipe out the rest — and null only
+  // when none of the four reported, which is not the same as zero response.
+  const parts = [likes, comments, saves, shares].filter(
+    (value): value is number => value !== null,
+  );
+  const engagementTotal =
+    parts.length === 0 ? null : parts.reduce((sum, value) => sum + value, 0);
+
   const engagement: ReelEngagement = {
-    views: views ?? reach,
-    likes: num("likes"),
-    comments: num("comments"),
-    // The tracker sends reshares under either name depending on platform.
-    shares: num("reshare_count") ?? num("repost_count") ?? num("shares"),
+    views: shownViews,
+    likes,
+    comments,
+    shares,
+    saves,
+    engagement: engagementTotal,
+    engagementRate:
+      engagementTotal === null || shownViews === null || shownViews === 0
+        ? null
+        : Math.round((engagementTotal / shownViews) * 1000) / 10,
     viewsFromReach,
   };
   // Nothing usable in the blob at all.
@@ -740,6 +846,7 @@ export function readEngagement(raw: unknown): ReelEngagement | null {
     engagement.views !== null ||
     engagement.likes !== null ||
     engagement.comments !== null ||
+    engagement.saves !== null ||
     engagement.shares !== null;
   return hasAny ? engagement : null;
 }
@@ -763,11 +870,21 @@ export function sumEngagement(
       ? null
       : values.reduce((total, value) => total + value, 0);
   };
+  const views = add((part) => part.views);
+  const engagementTotal = add((part) => part.engagement);
   return {
-    views: add((part) => part.views),
+    views,
     likes: add((part) => part.likes),
     comments: add((part) => part.comments),
     shares: add((part) => part.shares),
+    saves: add((part) => part.saves),
+    engagement: engagementTotal,
+    // Recomputed from the totals, never averaged: averaging percentages would
+    // let a 200-view post weigh as much as a 5-million-view one.
+    engagementRate:
+      engagementTotal === null || views === null || views === 0
+        ? null
+        : Math.round((engagementTotal / views) * 1000) / 10,
     // True only if every counted reel was standing in reach for views, so the
     // caveat is not shown when most of the number is real view counts.
     viewsFromReach:
@@ -793,6 +910,9 @@ function sortGroups(
   const value = (group: MatchGroupDto): number | null => {
     const total = group.totalEngagement;
     if (sort === "views") return total.views;
+    if (sort === "engagement") return total.engagement;
+    // The rate is what makes a small account comparable to a large one.
+    if (sort === "rate") return total.engagementRate;
     if (sort === "likes") return total.likes;
     if (sort === "reels") return group.reels.length;
     return null;

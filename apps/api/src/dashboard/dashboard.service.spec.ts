@@ -5,16 +5,24 @@ import type { PrismaService } from "../prisma/prisma.service.js";
 import { DashboardService } from "./dashboard.service.js";
 
 type Row = {
+  id: string;
   campaignId: string;
   duplicationScore: number | null;
   uniqueness: Uniqueness | null;
   campaign: { title: string };
 };
 
-function serviceWith(rows: Row[]) {
+function serviceWith(rows: Row[], matched: Array<{ submissionId: string }> = []) {
   const findMany = vi.fn().mockResolvedValue(rows);
   const prisma = {
-    client: { videoSubmission: { findMany } },
+    client: {
+      videoSubmission: { findMany },
+      // Which of this editor's videos reached Instagram — half of what is
+      // payable. Empty unless a test says otherwise.
+      crossPlatformMatch: {
+        findMany: vi.fn().mockResolvedValue(matched),
+      },
+    },
   } as unknown as PrismaService;
   return { service: new DashboardService(prisma), findMany };
 }
@@ -27,11 +35,14 @@ function editor(rateCard: number | null): AuthenticatedUser {
   } as AuthenticatedUser;
 }
 
+let nextRowId = 0;
 const row = (
   campaignId: string,
   duplicationScore: number | null,
   uniqueness: Uniqueness | null = Uniqueness.UNIQUE,
 ): Row => ({
+  // Distinct per row, so a test can say which one reached Instagram.
+  id: `sub_${(nextRowId += 1)}`,
   campaignId,
   duplicationScore,
   uniqueness,
@@ -118,6 +129,45 @@ describe("DashboardService.statsFor", () => {
     expect(stats.perCampaign[0]).toMatchObject({ unchecked: 1, unique: 1 });
   });
 
+  /**
+   * Payment is for original work and for work that reached Instagram. A cut
+   * handed in twice is one piece of work, so an unposted copy earns nothing —
+   * but a copy that got posted is paid for the posting.
+   */
+  it("pays for unique work", async () => {
+    const { service } = serviceWith([row("c1", 5, Uniqueness.UNIQUE)]);
+    const stats = await service.statsFor(editor(1500));
+    expect(stats.payableCount).toBe(1);
+    expect(stats.estimatedEarnings).toBe(1500);
+  });
+
+  it("does not pay for a duplicate nobody posted", async () => {
+    const { service } = serviceWith([row("c1", 95, Uniqueness.DUPLICATE)]);
+    const stats = await service.statsFor(editor(1500));
+    expect(stats.payableCount).toBe(0);
+    expect(stats.estimatedEarnings).toBe(0);
+  });
+
+  it("pays for a duplicate that did get posted", async () => {
+    const rows = [row("c1", 95, Uniqueness.DUPLICATE)];
+    const { service } = serviceWith(rows, [{ submissionId: rows[0]!.id }]);
+    const stats = await service.statsFor(editor(1500));
+    expect(stats.payableCount).toBe(1);
+    expect(stats.estimatedEarnings).toBe(1500);
+  });
+
+  /**
+   * The bug this exists for: a video can be both the editor's own work and
+   * matched on the tracker. Adding the two sets would pay for it twice.
+   */
+  it("pays once for a video that is both unique and posted", async () => {
+    const rows = [row("c1", 5, Uniqueness.UNIQUE)];
+    const { service } = serviceWith(rows, [{ submissionId: rows[0]!.id }]);
+    const stats = await service.statsFor(editor(1500));
+    expect(stats.payableCount).toBe(1);
+    expect(stats.estimatedEarnings).toBe(1500);
+  });
+
   it("averages only the videos that were actually compared", async () => {
     // The null one has not been through a run; counting it as 0 would report
     // a cleaner average than the evidence supports.
@@ -178,6 +228,13 @@ describe("DashboardService.adminStats", () => {
       editorId: string;
       _count: { _all: number };
     }>;
+    payableByCampaign?: Array<{
+      campaignId: string;
+      editorId: string;
+      _count: { _all: number };
+    }>;
+    /** Submissions matched to a tracker reel. */
+    matched?: Array<{ submissionId: string }>;
     /** Rate card for the mocked editor, behind the spend figures. */
     rateCard?: number | null;
     clusters?: Array<{
@@ -196,7 +253,11 @@ describe("DashboardService.adminStats", () => {
       .mockResolvedValueOnce(options.byEditor ?? [])
       .mockResolvedValueOnce(options.clusters ?? [])
       .mockResolvedValueOnce(options.editorsByCampaign ?? [])
-      // Duplicates per editor, for what the repeated work cost.
+      // Payable videos per editor per campaign.
+      .mockResolvedValueOnce(
+        options.payableByCampaign ?? options.editorsByCampaign ?? [],
+      )
+      // Duplicates that were posted, for what repeated work cost.
       .mockResolvedValueOnce(options.duplicatesByEditor ?? []);
     const findFirstRun = vi
       .fn()
@@ -232,6 +293,10 @@ describe("DashboardService.adminStats", () => {
           }),
         },
         videoComparison: { findFirst: findFirstRun },
+        // Which submissions reached Instagram — half of what is payable.
+        crossPlatformMatch: {
+          findMany: vi.fn().mockResolvedValue(options.matched ?? []),
+        },
       },
     } as unknown as PrismaService;
     return { service: new DashboardService(prisma), groupBy, findFirstRun };

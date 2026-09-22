@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { errorMessage } from "@/hooks/use-collection"
+import { useNearViewport } from "@/hooks/use-near-viewport"
 import { api } from "@/lib/api"
 import { fullDate, shortDate, compact } from "@/lib/format"
 import type {
@@ -467,11 +468,15 @@ function ReelCard({
   derivedFrom?: string
 }) {
   const [isUnplayable, setUnplayable] = useState(false)
+  // A campaign holds thousands of reels and every player costs a request even
+  // at preload="metadata", so a card fetches nothing until it is near view.
+  const [cardRef, isNear] = useNearViewport<HTMLDivElement>()
   const views = reel.postCounts?.views ?? reel.postCounts?.reach ?? null
   const isCopy = reel.uniqueness === "DUPLICATE"
 
   return (
     <div
+      ref={cardRef}
       className={cn(
         "overflow-hidden rounded-lg border transition-colors",
         isCopy && "border-[var(--warning)]/50",
@@ -481,7 +486,7 @@ function ReelCard({
         <div className="flex aspect-[9/16] items-center justify-center bg-muted/40 px-4 text-center text-[12px] text-muted-foreground">
           This reel cannot be played here.
         </div>
-      ) : (
+      ) : isNear ? (
         /* The browser's own controls: scrubbing, volume and fullscreen are all
            wanted when comparing two cuts, and all already there.
            preload="metadata" fetches the header without pulling the file. */
@@ -492,6 +497,10 @@ function ReelCard({
           onError={() => setUnplayable(true)}
           className="aspect-[9/16] w-full bg-black object-contain"
         />
+      ) : (
+        // Holds the card's height so the grid does not reflow when the video
+        // arrives and push whatever the reader is looking at off screen.
+        <div className="aspect-[9/16] w-full bg-muted/30" />
       )}
 
       <div className="flex flex-col gap-1.5 px-3 py-2.5">

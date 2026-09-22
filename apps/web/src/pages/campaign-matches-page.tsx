@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Link, useParams } from "react-router-dom"
 import {
   ArrowLeftIcon,
@@ -7,6 +7,9 @@ import {
   SparklesIcon,
   EyeIcon,
   TriangleAlertIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+  HeartIcon,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -16,7 +19,8 @@ import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { errorMessage } from "@/hooks/use-collection"
 import { api } from "@/lib/api"
-import { compact, fullDate } from "@/lib/format"
+import { useNearViewport } from "@/hooks/use-near-viewport"
+import { compact, shortDate } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import { MATCH_GROUP_SORTS, type MatchGroupSort } from "@/lib/types"
 import type {
@@ -116,7 +120,7 @@ export function CampaignMatchesPage() {
       : groups.reduce((total, g) => total + (g.totalEngagement.views ?? 0), 0)
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-3">
       <Link
         to={`/campaigns/${id}`}
         className="inline-flex items-center gap-1.5 text-[13px] text-muted-foreground transition-colors hover:text-foreground"
@@ -185,6 +189,9 @@ export function CampaignMatchesPage() {
                 key={option.value}
                 type="button"
                 onClick={() => setSort(option.value)}
+                // Each ordering says what it measures on hover: "Best
+                // response" means nothing without knowing what is rated.
+                title={option.hint}
                 className={cn(
                   "rounded px-2.5 py-1 text-[12px] transition-colors",
                   sort === option.value
@@ -211,7 +218,7 @@ export function CampaignMatchesPage() {
           description="Nothing handed in on this campaign is the same video as one of its Instagram reels. Run a check to look again after new videos arrive."
         />
       ) : (
-        <ul className="flex flex-col gap-3">
+        <ul className="flex flex-col gap-2">
           {groups.map((group) => (
             <GroupRow key={group.submissionId} group={group} />
           ))}
@@ -221,222 +228,296 @@ export function CampaignMatchesPage() {
   )
 }
 
+/**
+ * One edit, and every account that posted it.
+ *
+ * Built for one decision: is this cut worth pushing to more vendors? So the
+ * reach leads, the accounts are ranked by what they earned rather than by
+ * date, and the videos stay shut until someone asks for them — a wall of
+ * autoloading players buries the numbers the decision actually rests on.
+ */
 function GroupRow({ group }: { group: MatchGroup }) {
+  const [showVideos, setShowVideos] = useState(false)
+  // Videos load only once this group is near the viewport, so a campaign with
+  // fifty matches fetches the first few rather than all of them at once.
+  const [rowRef, isNear] = useNearViewport<HTMLLIElement>()
+  const total = group.totalEngagement
+
+  // Best performing account first: which audience worked is the question, and
+  // post order answers a different one.
+  const reels = [...group.reels].sort(
+    (left, right) =>
+      (right.engagement?.views ?? -1) - (left.engagement?.views ?? -1),
+  )
+  const best = reels[0]?.engagement?.views ?? null
+  const perReel =
+    total.views === null || total.countedReels === 0
+      ? null
+      : Math.round(total.views / total.countedReels)
+
   return (
-    <li className="rounded-lg border p-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="truncate text-[13px] font-medium">
+    <li ref={rowRef} className="rounded-lg border">
+      {/* One band, not three. The file name, who made it, the reach and the
+          secondary counts all sit on a single row so a screen holds several
+          matches rather than one and a half. */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2">
+        <span
+          className="min-w-0 flex-1 truncate text-[13px] font-medium"
+          title={group.fileName}
+        >
           {group.fileName}
         </span>
-        <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] tracking-wide uppercase">
-          {group.reels.length === 1
-            ? "1 reel"
-            : `${group.reels.length} reels`}
+
+        <span className="shrink-0 text-[12px] text-muted-foreground">
+          {group.editorName} &middot; {shortDate(group.uploadedAt)}
         </span>
+
         {group.origin === "REEL" && (
-          // The finding worth seeing first: the footage was already public
-          // before the edit was handed in.
-          <span className="rounded bg-[var(--warning,theme(colors.amber.500))]/15 px-1.5 py-0.5 text-[11px] tracking-wide text-amber-600 uppercase dark:text-amber-400">
-            posted before hand-in
+          <span
+            className="shrink-0 rounded bg-warning/15 px-1.5 py-0.5 text-[11px] tracking-wide text-warning uppercase"
+            title="This footage was public before the edit was handed in"
+          >
+            posted first
           </span>
         )}
 
-        {/* What this edit earned, added across every reel carrying it. The
-            reason the matching exists: one cut posted by nine accounts is one
-            piece of work with nine sets of counts. */}
-        <span className="ml-auto flex shrink-0 items-baseline gap-1.5">
-          {group.totalEngagement.views === null ? (
-            <span className="text-[12px] text-muted-foreground">
-              No counts yet
-            </span>
-          ) : (
-            <>
-              <EyeIcon className="size-3.5 self-center text-muted-foreground" />
-              <span className="numeric text-[15px] font-semibold">
-                {compact(group.totalEngagement.views)}
-              </span>
-              <span className="text-[11px] tracking-wide text-muted-foreground uppercase">
-                {group.totalEngagement.viewsFromReach ? "reach" : "views"}
-              </span>
-            </>
-          )}
+        {/* The reach, and what it is made of, inline rather than as a band of
+            stat blocks. The pairing that matters — total against the best
+            single post — still reads left to right. */}
+        <span className="flex shrink-0 items-baseline gap-1.5">
+          <EyeIcon className="size-3.5 self-center text-muted-foreground" />
+          <span className="numeric text-[15px] font-semibold">
+            {total.views === null ? "—" : compact(total.views)}
+          </span>
+          <span className="text-[11px] text-muted-foreground">
+            {total.viewsFromReach ? "reach" : "views"}
+          </span>
         </span>
+
+        {/* Reach says who saw it; this says who did something about it. The
+            two disagree often enough that ranking on views alone picks the
+            wrong cut to push. */}
+        {total.engagement !== null && (
+          <span className="flex shrink-0 items-baseline gap-1.5">
+            <HeartIcon className="size-3.5 self-center text-muted-foreground" />
+            <span className="numeric text-[15px] font-semibold">
+              {compact(total.engagement)}
+            </span>
+            <span className="text-[11px] text-muted-foreground">
+              engagement
+            </span>
+            {total.engagementRate !== null && (
+              <span
+                className="numeric text-[11px] text-muted-foreground"
+                title="Engagement as a share of views"
+              >
+                ({total.engagementRate}%)
+              </span>
+            )}
+          </span>
+        )}
+
+        <span className="numeric shrink-0 text-[12px] text-muted-foreground">
+          {best === null ? null : `best ${compact(best)}`}
+          {perReel === null ? null : ` · avg ${compact(perReel)}`}
+          {` · ${total.countedReels === total.totalReels ? total.totalReels : `${total.countedReels}/${total.totalReels}`} posts`}
+        </span>
+
+        <button
+          type="button"
+          onClick={() => setShowVideos((open) => !open)}
+          className="inline-flex shrink-0 items-center gap-1 rounded text-[12px] text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        >
+          {showVideos ? (
+            <ChevronDownIcon className="size-3.5" />
+          ) : (
+            <ChevronRightIcon className="size-3.5" />
+          )}
+          {showVideos ? "Hide" : "Watch"}
+        </button>
       </div>
 
-      {/* The rest of the totals, and how much of the group they cover. */}
-      {group.totalEngagement.countedReels > 0 && (
-        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted-foreground">
-          {group.totalEngagement.likes !== null && (
-            <span className="numeric">
-              {compact(group.totalEngagement.likes)} likes
-            </span>
-          )}
-          {group.totalEngagement.comments !== null && (
-            <span className="numeric">
-              {compact(group.totalEngagement.comments)} comments
-            </span>
-          )}
-          {group.totalEngagement.shares !== null && (
-            <span className="numeric">
-              {compact(group.totalEngagement.shares)} shares
-            </span>
-          )}
-          {/* Said plainly when the total does not cover the whole group,
-              rather than letting it read as complete. */}
-          {group.totalEngagement.countedReels <
-            group.totalEngagement.totalReels && (
-            <span>
-              from {group.totalEngagement.countedReels} of{" "}
-              {group.totalEngagement.totalReels} reels
-            </span>
-          )}
-        </div>
-      )}
-
-      <div className="mt-2.5 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
-        <Panel
-          label="The edit"
-          who={group.editorName}
-          when={group.uploadedAt}
-          isOriginal={group.origin === "EDITOR"}
-          videoUrl={group.playbackUrl}
-        />
-
-        <div>
-          <p className="mb-1.5 text-[11px] tracking-wide text-muted-foreground uppercase">
-            Also posted as
-          </p>
-          {/* Every reel inline rather than one pair per row: the whole point
-              is seeing how many accounts carried the same cut. */}
-          <ul className="grid gap-2 sm:grid-cols-2">
-            {group.reels.map((reel) => (
-              <li key={reel.reelId}>
-                <ReelPanel reel={reel} />
-              </li>
-            ))}
-          </ul>
-        </div>
+      {/* Accounts on one horizontal line: the comparison is between them, and
+          a wrapping grid breaks that reading. */}
+      <div className="-mx-px overflow-x-auto border-t px-3 py-2">
+        <ul className="flex w-max gap-2">
+          <li className="w-44 shrink-0">
+            <AccountCard
+              handle={group.editorName}
+              label="The edit"
+              when={group.uploadedAt}
+              isOriginal={group.origin === "EDITOR"}
+              videoUrl={showVideos && isNear ? group.playbackUrl : null}
+              engagement={undefined}
+              share={null}
+            />
+          </li>
+          {reels.map((reel) => (
+            <li key={reel.reelId} className="w-44 shrink-0">
+              <AccountCard
+                handle={`@${reel.username}`}
+                label={
+                  reel.contentHash === null ? "Re-encoded" : "Identical file"
+                }
+                when={reel.postedAt}
+                isOriginal={reel.origin === "REEL"}
+                link={reel.permalink}
+                videoUrl={showVideos && isNear ? reel.reelUrl : null}
+                engagement={reel.engagement}
+                share={
+                  total.views === null ||
+                  total.views === 0 ||
+                  reel.engagement?.views == null
+                    ? null
+                    : Math.round((reel.engagement.views / total.views) * 100)
+                }
+              />
+            </li>
+          ))}
+        </ul>
       </div>
     </li>
   )
 }
 
-function ReelPanel({ reel }: { reel: MatchedReel }) {
-  return (
-    <Panel
-      label={reel.contentHash === null ? "Re-encoded" : "Identical file"}
-      who={`@${reel.username}`}
-      when={reel.postedAt}
-      isOriginal={reel.origin === "REEL"}
-      link={reel.permalink}
-      videoUrl={reel.reelUrl}
-      engagement={reel.engagement}
-    />
-  )
-}
-
-function Panel({
+/**
+ * One account that posted this cut, with what it earned there.
+ *
+ * The video loads only when asked: `videoUrl` is null while the group is
+ * collapsed, so a page of fifty matches does not open fifty players.
+ */
+function AccountCard({
+  handle,
   label,
-  who,
   when,
   isOriginal,
   link,
   videoUrl,
   engagement,
+  share,
 }: {
+  handle: string
   label: string
-  who: string
   when: string | null
   isOriginal: boolean
   link?: string | null
-  /** The video itself, so a claimed match can be checked by watching it. */
-  videoUrl: string
-  /** What this one post earned. Absent on the edit's own panel. */
+  /** Null while collapsed — nothing is fetched until someone asks. */
+  videoUrl: string | null
   engagement?: ReelEngagement | null
+  /** This account's share of the cut's total reach, as a percentage. */
+  share: number | null
 }) {
   const [isUnplayable, setUnplayable] = useState(false)
 
   return (
-    <div className="overflow-hidden rounded-md bg-muted/40">
-      {videoUrl.length === 0 || isUnplayable ? (
-        <div className="flex aspect-video items-center justify-center bg-black/80 text-[12px] text-muted-foreground">
-          Video unavailable
-        </div>
-      ) : (
-        <video
-          controls
-          preload="metadata"
-          src={videoUrl}
-          onError={() => setUnplayable(true)}
-          className="aspect-video w-full bg-black"
-        />
-      )}
+    <div className="flex h-full flex-col overflow-hidden rounded-md border bg-muted/30">
+      {videoUrl !== null &&
+        (videoUrl.length === 0 || isUnplayable ? (
+          <div className="flex aspect-video items-center justify-center bg-black/80 text-[12px] text-muted-foreground">
+            Video unavailable
+          </div>
+        ) : (
+          <video
+            controls
+            preload="metadata"
+            src={videoUrl}
+            onError={() => setUnplayable(true)}
+            className="aspect-video w-full bg-black"
+          />
+        ))}
 
-      <div className="px-2.5 py-2">
-        <div className="flex items-center gap-1.5">
-          <span className="text-[11px] tracking-wide text-muted-foreground uppercase">
-            {label}
-          </span>
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5 px-2 py-1.5">
+        <div className="flex items-center gap-1">
           {isOriginal && (
-            <span className="rounded bg-[var(--success)]/15 px-1.5 text-[10px] font-medium tracking-wide text-[var(--success)] uppercase">
-              first
-            </span>
+            <span
+              aria-hidden
+              className="size-1.5 shrink-0 rounded-full bg-success"
+              title="Posted first"
+            />
           )}
+          <span
+            className="min-w-0 flex-1 truncate text-[12px] font-medium"
+            title={handle}
+          >
+            {handle}
+          </span>
           {link != null && (
             <a
               href={link}
               target="_blank"
               rel="noreferrer"
-              className="ml-auto text-muted-foreground transition-colors hover:text-foreground"
-              aria-label="Open the post"
+              className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"
+              aria-label={`Open ${handle}'s post`}
             >
-              <ExternalLinkIcon className="size-3.5" />
+              <ExternalLinkIcon className="size-3" />
             </a>
           )}
         </div>
-        <p className="mt-0.5 truncate text-[13px]">{who}</p>
-        <p className="text-[12px] text-muted-foreground">
-          {when === null ? "Date unknown" : fullDate(when)}
-        </p>
 
-        {/* What this individual post did, next to who posted it — the reason
-            one account is worth sharing to and another is not. */}
-        {engagement !== undefined && (
-          <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 border-t pt-1.5 text-[12px]">
-            {engagement === null ? (
-              <span className="text-muted-foreground">No counts</span>
-            ) : (
-              <>
-                {engagement.views !== null && (
-                  <span
-                    className="numeric font-medium"
-                    title={
-                      engagement.viewsFromReach
-                        ? "Reach, shown because this post reports no view count"
-                        : "Views"
-                    }
-                  >
-                    {compact(engagement.views)}
-                    <span className="ml-1 font-normal text-muted-foreground">
-                      {engagement.viewsFromReach ? "reach" : "views"}
-                    </span>
-                  </span>
-                )}
-                {engagement.likes !== null && (
-                  <span className="numeric text-muted-foreground">
-                    {compact(engagement.likes)} likes
-                  </span>
-                )}
-                {engagement.shares !== null && engagement.shares > 0 && (
-                  <span className="numeric text-muted-foreground">
-                    {compact(engagement.shares)} shares
-                  </span>
-                )}
-              </>
-            )}
-          </div>
+        {engagement === undefined ? (
+          <p className="text-[11px] text-muted-foreground">{label}</p>
+        ) : engagement === null ? (
+          <p className="text-[11px] text-muted-foreground">No counts</p>
+        ) : (
+          <>
+            <div className="flex items-baseline gap-1">
+              <span className="numeric text-[14px] font-semibold">
+                {engagement.views === null ? "—" : compact(engagement.views)}
+              </span>
+              <span className="text-[11px] text-muted-foreground">
+                {engagement.viewsFromReach ? "reach" : "views"}
+              </span>
+            </div>
+
+            {/* The counts themselves, not just a percentage. A bare "9.3%"
+                on its own row read as the share of the group's reach, which
+                is a different number entirely. */}
+            <div className="flex flex-wrap items-baseline gap-x-2 text-[11px] text-muted-foreground">
+              {engagement.likes !== null && (
+                <span className="numeric">{compact(engagement.likes)} likes</span>
+              )}
+              {engagement.comments !== null && engagement.comments > 0 && (
+                <span className="numeric">
+                  {compact(engagement.comments)} comments
+                </span>
+              )}
+              {engagement.saves !== null && engagement.saves > 0 && (
+                <span className="numeric">{compact(engagement.saves)} saves</span>
+              )}
+            </div>
+          </>
         )}
+
+        {/* The bar is this account's share of the cut's total reach. The
+            engagement rate beside the date is a different measure — response
+            against this post's own views — so the two are kept apart and
+            each is named. */}
+        {share !== null && (
+          <span
+            aria-hidden
+            title={`${share}% of this cut's reach`}
+            className="h-0.5 overflow-hidden rounded-full bg-muted"
+          >
+            <span
+              className="block h-full rounded-full bg-foreground/40"
+              style={{ width: `${Math.max(share, 2)}%` }}
+            />
+          </span>
+        )}
+
+        <p className="flex items-baseline gap-x-2 text-[11px] text-muted-foreground">
+          <span>{when === null ? "Date unknown" : shortDate(when)}</span>
+          {engagement?.engagementRate != null && (
+            <span
+              className="numeric ml-auto"
+              title={`${engagement.engagement?.toLocaleString("en-IN")} engagement from ${engagement.views?.toLocaleString("en-IN")} views`}
+            >
+              {engagement.engagementRate}% engagement
+            </span>
+          )}
+        </p>
       </div>
     </div>
   )
 }
+

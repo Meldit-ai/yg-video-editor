@@ -20,8 +20,36 @@ describe("readEngagement", () => {
       likes: 499,
       comments: 24,
       shares: 36,
+      saves: 9,
+      // likes + comments + saves + shares — what people did, not who saw it.
+      engagement: 568,
+      // 568 of 26,795 views, to one decimal place.
+      engagementRate: 2.1,
       viewsFromReach: false,
     });
+  });
+
+  /**
+   * Views and engagement answer different questions, and on this campaign
+   * they disagree: one account took 8% fewer views than another and 60% more
+   * engagement. Ranking on views alone picks the wrong account to push.
+   */
+  it("rates engagement against views, not against other posts", () => {
+    const big = readEngagement({ views: 5_139_611, likes: 260_000, comments: 4_608, saves: 5_000, reshare_count: 5_000 });
+    const small = readEngagement({ views: 4_718_577, likes: 420_000, comments: 5_314, saves: 7_500, reshare_count: 7_500 });
+    expect(big!.views).toBeGreaterThan(small!.views!);
+    expect(small!.engagement).toBeGreaterThan(big!.engagement!);
+    expect(small!.engagementRate).toBeGreaterThan(big!.engagementRate!);
+  });
+
+  it("counts saves, which the tracker sends on every reel", () => {
+    expect(readEngagement({ views: 100, saves: 5 })?.saves).toBe(5);
+    expect(readEngagement({ views: 100, saves: 5 })?.engagement).toBe(5);
+  });
+
+  it("has no rate when there are no views to divide by", () => {
+    expect(readEngagement({ likes: 5 })?.engagementRate).toBeNull();
+    expect(readEngagement({ views: 0, likes: 5 })?.engagementRate).toBeNull();
   });
 
   it("falls back to reach when a post reports no views", () => {
@@ -45,7 +73,9 @@ describe("readEngagement", () => {
   });
 
   it("returns null when the blob carries nothing usable", () => {
-    expect(readEngagement({ saves: 3, impressions: 9 })).toBeNull();
+    // impressions alone is not engagement; saves now is, so it is no longer
+    // part of this case.
+    expect(readEngagement({ impressions: 9 })).toBeNull();
     expect(readEngagement(null)).toBeNull();
     expect(readEngagement("not an object")).toBeNull();
   });
@@ -72,6 +102,21 @@ describe("sumEngagement", () => {
 
   it("stays null when no reel reported that field at all", () => {
     expect(sumEngagement([b, b]).comments).toBeNull();
+  });
+
+  /**
+   * A group's rate is recomputed from its totals, never averaged from its
+   * members': averaging would let a 200-view post weigh as much as a
+   * 5-million-view one and report a number no post actually achieved.
+   */
+  it("recomputes a group's rate from the totals, not the average", () => {
+    const tiny = readEngagement({ views: 100, likes: 50 })! // 50%
+    const huge = readEngagement({ views: 1_000_000, likes: 10_000 })! // 1%
+    const total = sumEngagement([tiny, huge])
+    expect(total.views).toBe(1_000_100)
+    expect(total.engagement).toBe(10_050)
+    // 10,050 of 1,000,100 — about 1%, not the 25.5% an average would give.
+    expect(total.engagementRate).toBeCloseTo(1, 1)
   });
 
   it("says how many of the group actually reported", () => {

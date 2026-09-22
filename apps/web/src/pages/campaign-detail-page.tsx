@@ -14,6 +14,7 @@ import { Link, useParams } from "react-router-dom"
 
 import { useAuth } from "@/auth/auth-context"
 import { CampaignSubmissions } from "@/components/campaign-submissions"
+import { PostedVideos } from "@/components/posted-videos"
 import { EmptyState } from "@/components/empty-state"
 import { MetaDivider, PageHeader } from "@/components/page-header"
 import { CampaignStatusBadge } from "@/components/status-badge"
@@ -118,6 +119,74 @@ function TrackerChip({ campaign }: { campaign: Campaign }) {
   )
 }
 
+/** The two things an editor does on a campaign: hand work in, and see how it did. */
+const EDITOR_TABS = [
+  { value: "submissions", label: "Submissions" },
+  { value: "posted", label: "On Instagram" },
+] as const
+
+type EditorTab = (typeof EDITOR_TABS)[number]["value"]
+
+/**
+ * Submissions and posted work as tabs rather than stacked panels.
+ *
+ * Stacked, the posted panel pushed the upload button and the videos below the
+ * fold on every campaign. They are also two different questions — "hand this
+ * in" and "how did it do" — and switching reads better than scrolling past
+ * one to reach the other.
+ */
+function EditorTabs({ campaignId }: { campaignId: string }) {
+  const [tab, setTab] = useState<EditorTab>("submissions")
+  const reduceMotion = useReducedMotion()
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex w-fit items-center gap-1 rounded-lg border bg-muted/40 p-0.5">
+        {EDITOR_TABS.map((option) => {
+          const isSelected = tab === option.value
+          return (
+            <button
+              key={option.value}
+              type="button"
+              aria-pressed={isSelected}
+              onClick={() => setTab(option.value)}
+              className={cn(
+                "relative rounded-md px-3 py-1.5 text-[13px] font-medium transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                isSelected
+                  ? "text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {isSelected && (
+                <motion.span
+                  aria-hidden
+                  layoutId="campaign-editor-tab"
+                  transition={
+                    reduceMotion
+                      ? { duration: 0 }
+                      : { type: "spring", stiffness: 520, damping: 42 }
+                  }
+                  className="absolute inset-0 rounded-md border bg-background"
+                />
+              )}
+              <span className="relative">{option.label}</span>
+            </button>
+          )
+        })}
+      </div>
+
+      {/* Both stay mounted: switching back should not refetch the list or
+          restart a video somebody was part way through. */}
+      <div hidden={tab !== "submissions"}>
+        <CampaignSubmissions campaignId={campaignId} />
+      </div>
+      <div hidden={tab !== "posted"}>
+        <PostedVideos campaignId={campaignId} />
+      </div>
+    </div>
+  )
+}
+
 function BackLink() {
   return (
     <Link
@@ -134,7 +203,7 @@ function BackLink() {
  *  not reflow when the data lands. */
 function DetailSkeleton() {
   return (
-    <div className="flex w-full max-w-3xl flex-col gap-4">
+    <div className="flex w-full max-w-6xl flex-col gap-4">
       <div className="space-y-2.5">
         <Skeleton className="h-4 w-[240px]" />
         <div className="flex items-center gap-2">
@@ -216,7 +285,7 @@ export function CampaignDetailPage() {
 
   if (state.status === "error") {
     return (
-      <div className="flex w-full max-w-3xl flex-col gap-4">
+      <div className="flex w-full max-w-6xl flex-col gap-4">
         <BackLink />
         <div className="panel-sheen rounded-lg border bg-card">
           {state.notFound ? (
@@ -267,7 +336,7 @@ export function CampaignDetailPage() {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: reduceMotion ? 0 : 0.15, ease: "easeOut" }}
-      className="flex w-full max-w-3xl flex-col gap-4"
+      className="flex w-full max-w-6xl flex-col gap-4"
     >
       {/* The feed sits on this row rather than below the page: a campaign can
           carry hundreds of videos, and a link under them is a link nobody
@@ -337,7 +406,14 @@ export function CampaignDetailPage() {
 
       {/* Above the record metadata on purpose: handing in a cut is what an
           editor opens this page to do, the ids at the bottom are reference. */}
-      <CampaignSubmissions campaignId={campaign.id} />
+      {/* Editors get two tabs; an admin has the matches page for the same
+          findings across every editor, so there is nothing to switch between
+          and the submissions stand alone. */}
+      {isAdmin ? (
+        <CampaignSubmissions campaignId={campaign.id} />
+      ) : (
+        <EditorTabs campaignId={campaign.id} />
+      )}
 
       <section className="grid grid-cols-2 gap-4 rounded-lg border bg-muted/20 p-4">
         <DetailField label="Created">

@@ -19,6 +19,8 @@ import { CurrentUser } from "../auth/decorators/current-user.decorator.js";
 import { CampaignAccessGuard } from "../campaigns/guards/campaign-access.guard.js";
 import { UploadSizeGuard } from "./guards/upload-size.guard.js";
 import { VIDEO_FIELD_NAME } from "./submissions.constants.js";
+import { MatchesService } from "../matches/matches.service.js";
+import type { EditorPostedVideoDto } from "../matches/matches.types.js";
 import { SubmissionsService } from "./submissions.service.js";
 import type { UploadedVideo, VideoSubmissionDto } from "./submissions.types.js";
 
@@ -36,7 +38,10 @@ import type { UploadedVideo, VideoSubmissionDto } from "./submissions.types.js";
 @Controller("campaigns/:campaignId/submissions")
 @UseGuards(CampaignAccessGuard)
 export class SubmissionsController {
-  constructor(private readonly submissions: SubmissionsService) {}
+  constructor(
+    private readonly submissions: SubmissionsService,
+    private readonly matches: MatchesService,
+  ) {}
 
   /**
    * GET /api/campaigns/:campaignId/submissions — newest first by default.
@@ -74,9 +79,24 @@ export class SubmissionsController {
   }
 
   /**
-   * DELETE /api/campaigns/:campaignId/submissions/:submissionId — soft delete;
-   * returns the withdrawn row. The video file itself stays in storage.
+   * GET .../submissions/posted — the caller's own videos that reached
+   * Instagram, and what they earned there.
+   *
+   * Lives here rather than under /matches because that controller is
+   * @Roles(ADMIN): it names creators across a whole campaign. This returns
+   * only the caller's own work, in a shape that says nothing about how the
+   * match was made — no tracker ids, no hashes, no duplication verdicts.
+   *
+   * An admin calling it sees their own submissions, which is usually none.
    */
+  @Get("posted")
+  posted(
+    @Param("campaignId") campaignId: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ): Promise<EditorPostedVideoDto[]> {
+    return this.matches.findForEditor(campaignId, user.id);
+  }
+
   /**
    * PATCH /api/campaigns/:campaignId/submissions/:submissionId — rename.
    * An editor may rename their own; an admin any on the campaign.
@@ -96,6 +116,10 @@ export class SubmissionsController {
     );
   }
 
+  /**
+   * DELETE /api/campaigns/:campaignId/submissions/:submissionId — soft delete;
+   * returns the withdrawn row. The video file itself stays in storage.
+   */
   @Delete(":submissionId")
   remove(
     @Param("campaignId") campaignId: string,

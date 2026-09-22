@@ -54,7 +54,7 @@ export function CampaignFeedPage() {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: reduceMotion ? 0 : 0.15, ease: "easeOut" }}
-      className="flex w-full max-w-5xl flex-col gap-4"
+      className="flex w-full max-w-7xl flex-col gap-4"
     >
       <Link
         to={id === undefined ? "/campaigns" : `/campaigns/${id}`}

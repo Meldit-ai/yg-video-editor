@@ -94,6 +94,26 @@ export interface ReelEngagement {
   likes: number | null;
   comments: number | null;
   shares: number | null;
+  /** Saves. A strong signal: people keep what they mean to come back to. */
+  saves: number | null;
+  /**
+   * Likes + comments + saves + shares — what people did, not how many saw it.
+   *
+   * Views measure reach; this measures response, and the two disagree often
+   * enough to matter. On this campaign one account took 8% fewer views than
+   * another and 60% more engagement, so ranking on views alone picks the
+   * wrong account to push.
+   *
+   * Null when the payload carried none of the four.
+   */
+  engagement: number | null;
+  /**
+   * Engagement as a percentage of views, one decimal place.
+   *
+   * The comparable number: a small account at 9% is doing better with its
+   * audience than a large one at 5%. Null when there is nothing to divide by.
+   */
+  engagementRate: number | null;
   /** True when `views` is standing in for a missing view count. */
   viewsFromReach: boolean;
 }
@@ -125,6 +145,8 @@ export interface MatchedReelDto {
 export const MATCH_GROUP_SORTS = [
   "recent",
   "views",
+  "engagement",
+  "rate",
   "likes",
   "reels",
 ] as const;
@@ -162,4 +184,40 @@ export interface MatchGroupDto {
   origin: MatchOrigin;
 
   checkedAt: Date;
+}
+
+/**
+ * How one of an editor's own videos performed on Instagram.
+ *
+ * A deliberately separate shape from MatchGroupDto rather than a filtered copy
+ * of it. An editor is shown that their work was posted and what it earned;
+ * they are not shown how we know. So this carries no reelId (our tracker's
+ * key), no contentHash (the matching method), no origin (a duplication
+ * finding about their own hand-in), and no reelUrl (the tracker's media file).
+ * The permalink is the public Instagram post, which anyone can open anyway.
+ *
+ * Building it as its own type means a field added to the admin DTO later
+ * cannot leak here by default — it has to be added twice, on purpose.
+ */
+export interface EditorPostedVideoDto {
+  submissionId: string;
+  fileName: string;
+  uploadedAt: Date;
+  playbackUrl: string;
+
+  /** Where it was posted, and what each post earned. */
+  posts: {
+    /** The account that posted it. */
+    username: string;
+    /** The public Instagram post. Null when the tracker has no link. */
+    permalink: string | null;
+    postedAt: Date | null;
+    engagement: ReelEngagement | null;
+  }[];
+
+  /** Everything those posts earned, added up. */
+  totalEngagement: ReelEngagement & {
+    countedPosts: number;
+    totalPosts: number;
+  };
 }

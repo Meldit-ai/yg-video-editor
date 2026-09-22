@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/sheet"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useCollection } from "@/hooks/use-collection"
+import { useNearViewport } from "@/hooks/use-near-viewport"
 import { fileSize, relativeTime } from "@/lib/format"
 import {
   MAX_SHARE_MEDIA,
@@ -164,7 +165,7 @@ export function CampaignFeed({ campaign }: { campaign: Campaign }) {
   const checkedCount = items.filter((item) => item.uniqueness !== null).length
 
   return (
-    <section className="space-y-3">
+    <section className="space-y-2.5">
       <div className="flex flex-wrap items-center gap-3">
         <h2 className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
           Campaign feed
@@ -279,7 +280,7 @@ export function CampaignFeed({ campaign }: { campaign: Campaign }) {
       ) : (
         <ul
           className={cn(
-            "grid gap-3 sm:grid-cols-2",
+            "grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4",
             // Room for the floating selection bar, which otherwise covers the
             // last row of cards.
             visibleSelected.length > 0 && "pb-20",
@@ -504,7 +505,7 @@ function DuplicateGroupSheet({
         side="right"
         // Wider than the default sm:max-w-sm: two videos have to sit side by
         // side for a comparison to be worth opening.
-        className="w-full gap-0 p-0 sm:max-w-2xl"
+        className="w-full gap-0 p-0 sm:max-w-3xl"
       >
         {group !== null && (
           <>
@@ -548,7 +549,7 @@ function DuplicateGroupSheet({
               >
                 Duplicates of {group.head.fileName}
               </p>
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
                 {group.children.map((copy) => (
                   <FeedCard
                     key={copy.id}
@@ -616,27 +617,43 @@ function FeedCard({
   footer?: ReactNode
 }) {
   const [isUnplayable, setUnplayable] = useState(false)
+  // Even preload="metadata" is a request per player, so a campaign feed of a
+  // hundred cards fetches only the ones near the reader.
+  const [cardRef, isNear] = useNearViewport<HTMLDivElement>()
   const relation = relationLine(submission, parentName, role)
 
   return (
     <div
+      ref={cardRef}
       className={cn(
         "overflow-hidden rounded-lg border transition-colors",
         isSelected && "border-ring bg-muted/30",
       )}
     >
-      <div className="flex items-start gap-2 border-b px-3 py-2">
+      {/* Name and verdict on one row, the relation folded under it rather than
+          taking a band of its own. Two bands became one. */}
+      <div className="flex items-start gap-2 border-b px-3 py-1.5">
         <Checkbox
           checked={isSelected}
           onCheckedChange={onToggle}
           aria-label={`Select ${submission.fileName}`}
-          className="mt-0.5"
+          className="mt-1"
         />
-        <span
-          className="min-w-0 flex-1 truncate text-[13px] font-medium"
-          title={submission.fileName}
-        >
-          {submission.fileName}
+        <span className="min-w-0 flex-1">
+          <span
+            className="block truncate text-[13px] font-medium"
+            title={submission.fileName}
+          >
+            {submission.fileName}
+          </span>
+          {relation !== null && (
+            <span
+              className="block truncate text-[11px] text-muted-foreground"
+              title={`Against this campaign's ${threshold}% limit`}
+            >
+              {relation}
+            </span>
+          )}
         </span>
         <UniquenessBadge
           uniqueness={submission.uniqueness}
@@ -645,24 +662,15 @@ function FeedCard({
           pendingLabel={
             submission.duplicationCheckedAt === null ? "Checking" : "Unreadable"
           }
-          className="shrink-0"
+          className="mt-0.5 shrink-0"
         />
       </div>
-
-      {relation ? (
-        <div
-          className="border-b px-3 py-1.5 text-[12px] text-muted-foreground"
-          title={`Against this campaign's ${threshold}% limit`}
-        >
-          {relation}
-        </div>
-      ) : null}
 
       {isUnplayable ? (
         <div className="flex aspect-video items-center justify-center bg-muted/40 px-4 text-center text-[12px] text-muted-foreground">
           This video cannot be played in the browser.
         </div>
-      ) : (
+      ) : isNear ? (
         <video
           controls
           preload="metadata"
@@ -670,16 +678,19 @@ function FeedCard({
           onError={() => setUnplayable(true)}
           className="aspect-video w-full bg-black"
         />
+      ) : (
+        // Holds the card's height so the grid does not reflow underneath the
+        // reader when a video further up finally arrives.
+        <div className="aspect-video w-full bg-muted/30" />
       )}
 
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2 text-[12px] text-muted-foreground">
-        <span className="shrink-0">{submission.editorName}</span>
+      <div className="flex items-center gap-x-2 px-3 py-1.5 text-[11px] text-muted-foreground">
+        <span className="min-w-0 truncate">{submission.editorName}</span>
         <MetaDivider />
         <span className="numeric shrink-0">
           {fileSize(submission.sizeBytes)}
         </span>
-        <MetaDivider />
-        <span className="numeric shrink-0">
+        <span className="numeric ml-auto shrink-0">
           {relativeTime(submission.createdAt)}
         </span>
       </div>
@@ -709,7 +720,7 @@ function relationLine(
 
 function FeedSkeleton() {
   return (
-    <div className="grid gap-3 sm:grid-cols-2">
+    <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
       {[0, 1].map((index) => (
         <div key={index} className="overflow-hidden rounded-lg border">
           <div className="flex items-center gap-2 border-b px-3 py-2">

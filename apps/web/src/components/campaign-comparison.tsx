@@ -31,6 +31,7 @@ import { Progress } from "@/components/ui/progress"
 import { Skeleton } from "@/components/ui/skeleton"
 import { errorMessage } from "@/hooks/use-collection"
 import type { ComparisonState, SubmissionCheck } from "@/hooks/use-comparison"
+import { scrollToSubmission } from "@/lib/scroll-to-submission"
 import { fileSize, fullDate, relativeTime } from "@/lib/format"
 import type {
   Comparison,
@@ -396,11 +397,11 @@ export function SubmissionCheckStrip({
         {/* The pairs live in the run that labelled this video. When the
             latest run is a later upload's, the row still knows its parent. */}
         {check.matches.length === 0 && (
-          <li>
+          <li className="flex items-center gap-1 pr-2">
             <button
               type="button"
               onClick={onOpenResult}
-              className="flex w-full items-center gap-2 px-3 py-1 text-left text-[11px] transition-colors outline-none hover:bg-accent/50 focus-visible:bg-accent/50"
+              className="flex min-w-0 flex-1 items-center gap-2 px-3 py-1 text-left text-[11px] transition-colors outline-none hover:bg-accent/50 focus-visible:bg-accent/50"
             >
               <CornerDownRightIcon className="size-3 shrink-0 text-muted-foreground" />
               <span className="min-w-0 flex-1 truncate">
@@ -419,14 +420,36 @@ export function SubmissionCheckStrip({
               <span className="numeric shrink-0">{score(check.topScore)}</span>
               <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground" />
             </button>
+            {/* Separate from the row above, which opens the evidence. This
+                answers the other question the row raises — which card is it? */}
+            {check.parent !== null && (
+              <button
+                type="button"
+                onClick={() => {
+                  // An editor's list holds only their own videos, so a parent
+                  // belonging to someone else has no card here. Say so rather
+                  // than letting the click do nothing.
+                  if (!scrollToSubmission(check.parent!.id)) {
+                    toast.info("That video is not on screen", {
+                      description:
+                        "A filter may be hiding it, or it was handed in by someone whose work you cannot see.",
+                    })
+                  }
+                }}
+                title={`Show ${check.parent.fileName}`}
+                className="shrink-0 rounded px-1.5 py-1 text-[11px] text-muted-foreground transition-colors outline-none hover:bg-accent/50 hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              >
+                Show
+              </button>
+            )}
           </li>
         )}
         {check.matches.map(({ pair, other }) => (
-          <li key={pair.id}>
+          <li key={pair.id} className="flex items-center gap-1 pr-2">
             <button
               type="button"
               onClick={onOpenResult}
-              className="flex w-full items-center gap-2 px-3 py-1 text-left text-[11px] transition-colors outline-none hover:bg-accent/50 focus-visible:bg-accent/50"
+              className="flex min-w-0 flex-1 items-center gap-2 px-3 py-1 text-left text-[11px] transition-colors outline-none hover:bg-accent/50 focus-visible:bg-accent/50"
             >
               <CornerDownRightIcon className="size-3 shrink-0 text-muted-foreground" />
               {/* The upload time is what tells two matches apart when they
@@ -451,6 +474,30 @@ export function SubmissionCheckStrip({
               <ComparisonVerdictBadge verdict={pair.verdict} compact />
               <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground" />
             </button>
+            {/* The same jump the no-pairs row offers. Without it here, "Show"
+                appeared on some duplicates and not others — and this is the
+                commoner branch, so it looked arbitrary.
+
+                An epoch upload time marks a counterpart the API redacted for
+                an editor: there is no card to jump to, because the video is
+                not theirs and is not on the page. */}
+            {other !== null && Date.parse(other.submittedAt) > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (!scrollToSubmission(other.submissionId)) {
+                    toast.info("That video is not on screen", {
+                      description:
+                        "A filter may be hiding it, or it was handed in by someone whose work you cannot see.",
+                    })
+                  }
+                }}
+                title={`Show ${other.fileName}`}
+                className="shrink-0 rounded px-1.5 py-1 text-[11px] text-muted-foreground transition-colors outline-none hover:bg-accent/50 hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              >
+                Show
+              </button>
+            )}
           </li>
         ))}
       </ul>
@@ -1130,7 +1177,7 @@ export function SubmissionResultDialog({
               </DialogDescription>
             </DialogHeader>
 
-            <ResultBody check={shown.check} state={state} />
+            <ResultBody check={shown.check} state={state} onClose={onClose} />
           </>
         )}
       </DialogContent>
@@ -1142,9 +1189,12 @@ export function SubmissionResultDialog({
 function ResultBody({
   check,
   state,
+  onClose,
 }: {
   check: SubmissionCheck
   state: ComparisonState
+  /** Closes the dialog, so a jump to the parent card is actually visible. */
+  onClose: () => void
 }) {
   if (check.kind === "none") {
     return (
@@ -1233,9 +1283,33 @@ function ResultBody({
         <p className={SECTION_LABEL}>What it matches</p>
         {check.matches.length === 0 && (
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border p-3">
-            <span className="min-w-0 truncate text-[13px] font-medium">
-              {check.parent?.fileName ?? "Another submission"}
-            </span>
+            {/* The name alone left the reader hunting through the grid for
+                which card it meant. This jumps to it and flashes it. */}
+            {check.parent === null ? (
+              <span className="min-w-0 truncate text-[13px] font-medium">
+                Another submission
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  // Closing only on success: leaving the dialog open is the
+                  // honest outcome when there is no card to jump to.
+                  if (scrollToSubmission(check.parent!.id)) {
+                    onClose()
+                  } else {
+                    toast.info("That video is not on screen", {
+                      description:
+                        "A filter may be hiding it, or it was handed in by someone whose work you cannot see.",
+                    })
+                  }
+                }}
+                title={`Show ${check.parent.fileName}`}
+                className="min-w-0 truncate rounded text-[13px] font-medium underline-offset-2 outline-none hover:underline focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              >
+                {check.parent.fileName}
+              </button>
+            )}
             {check.parent !== null && (
               <>
                 <MetaDivider />

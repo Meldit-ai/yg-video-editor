@@ -164,7 +164,7 @@ function Dashboard({ stats }: { stats: EditorDashboardStats }) {
         />
         <Stat
           icon={WalletIcon}
-          label="Value submitted"
+          label="Payable"
           value={
             stats.estimatedEarnings === null
               ? "—"
@@ -173,7 +173,7 @@ function Dashboard({ stats }: { stats: EditorDashboardStats }) {
           hint={
             stats.rateCard === null
               ? "Rate not set"
-              : `${rupees(stats.rateCard)} per video`
+              : `${stats.payableCount} of ${stats.videosUploaded} videos · ${rupees(stats.rateCard)} each`
           }
         />
       </div>
@@ -254,8 +254,10 @@ function Dashboard({ stats }: { stats: EditorDashboardStats }) {
         </Card>
 
         <p className="text-[12px] text-muted-foreground">
-          Value submitted is your rate card times the videos you have handed
-          in. It is a measure of work done, not an invoice.
+          Payable counts your original work, and anything of yours that reached
+          Instagram. Handing in the same cut twice is one piece of work, so a
+          copy earns nothing unless it is the one that got posted. It is a
+          measure of work done, not an invoice.
         </p>
       </section>
     </div>

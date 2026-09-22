@@ -47,6 +47,11 @@ export interface EditorDashboardStats {
    * this is the value of work submitted, not money owed.
    */
   estimatedEarnings: number | null;
+  /**
+   * Videos that earn a fee: the editor's own work, plus anything that reached
+   * Instagram. A video that is both counts once.
+   */
+  payableCount: number;
   rateCard: number | null;
   perCampaign: DashboardCampaignStat[];
 }
@@ -61,16 +66,23 @@ export interface AdminCampaignStat {
   unchecked: number;
   editors: number;
   /**
-   * What this campaign's hand-ins are worth, at each editor's rate card.
+   * What this campaign owes, at each editor's rate card.
    *
    * Null when no editor who worked on it has a rate agreed — which is not the
-   * same as zero. Counts every hand-in, including duplicates: whether a
-   * duplicate is payable is a judgement nothing here models, so this is the
-   * value of work submitted rather than money owed.
+   * same as zero. Counts only payable videos: the editor's own work, and
+   * anything that reached Instagram. See `payableVideos`.
    */
   spend: number | null;
-  /** Videos priced, out of `videos` — so a partial figure reads as partial. */
+  /** Payable videos that carried a rate, out of `payableVideos`. */
   pricedVideos: number;
+  /**
+   * Videos that earn a fee: UNIQUE, or matched to a tracker reel.
+   *
+   * A cut handed in twice is one piece of work, so an unposted copy earns
+   * nothing — but a copy that got posted is paid for the posting. A video that
+   * is both unique and posted counts once.
+   */
+  payableVideos: number;
 }
 
 /**
@@ -90,11 +102,10 @@ export interface AdminDashboardStats {
   /** Every campaign's spend added up. Null when nothing could be priced. */
   totalSpend: number | null;
   /**
-   * What the duplicates alone are worth.
+   * What is paid for repeated cuts that were posted anyway.
    *
-   * The one money figure an admin can act on: repeated cuts being paid for at
-   * the same rate as original work is the cost of the problem the duplicate
-   * checking exists to find.
+   * Not every duplicate — an unposted one earns nothing — so this is the cost
+   * of the same footage reaching Instagram more than once.
    */
   duplicateSpend: number | null;
   /** Campaigns by size, largest first. */

@@ -150,14 +150,14 @@ function AdminDashboard({ stats }: { stats: AdminDashboardStats }) {
             are we paying for cuts we already had? */}
         <Stat
           icon={IndianRupeeIcon}
-          label="Value submitted"
+          label="Payable"
           value={stats.totalSpend === null ? "—" : rupees(stats.totalSpend)}
           hint={
             stats.totalSpend === null
               ? "No rates set"
               : stats.duplicateSpend === null || stats.duplicateSpend === 0
-                ? "None of it repeated"
-                : `${rupees(stats.duplicateSpend)} of it repeated work`
+                ? "Original work and posted cuts"
+                : `${rupees(stats.duplicateSpend)} of it repeated cuts that got posted`
           }
           tone={
             stats.duplicateSpend !== null && stats.duplicateSpend > 0
@@ -187,7 +187,7 @@ function AdminDashboard({ stats }: { stats: AdminDashboardStats }) {
                 </span>
                 <span>Duplicate</span>
               </span>
-              <span className="w-28 shrink-0 text-right">Value</span>
+              <span className="w-28 shrink-0 text-right">Payable</span>
             </div>
             {stats.perCampaign.map((row) => (
               <div
@@ -239,9 +239,11 @@ function AdminDashboard({ stats }: { stats: AdminDashboardStats }) {
                   title={
                     row.spend === null
                       ? "No rate set for the editors on this campaign"
-                      : row.pricedVideos < row.videos
-                        ? `${row.pricedVideos} of ${row.videos} videos priced`
-                        : undefined
+                      : `${row.payableVideos} of ${row.videos} videos payable${
+                          row.pricedVideos < row.payableVideos
+                            ? `, ${row.pricedVideos} with a rate`
+                            : ""
+                        }`
                   }
                 >
                   {row.spend === null ? (
@@ -249,7 +251,7 @@ function AdminDashboard({ stats }: { stats: AdminDashboardStats }) {
                   ) : (
                     <>
                       {rupees(row.spend)}
-                      {row.pricedVideos < row.videos && (
+                      {row.pricedVideos < row.payableVideos && (
                         <span className="text-muted-foreground">*</span>
                       )}
                     </>

@@ -41,6 +41,10 @@ import { errorMessage, useCollection } from "@/hooks/use-collection"
 import { useComparison } from "@/hooks/use-comparison"
 import type { SubmissionCheck } from "@/hooks/use-comparison"
 import { UploadCancelledError, api } from "@/lib/api"
+import {
+  scrollToSubmission,
+  submissionAnchorId,
+} from "@/lib/scroll-to-submission"
 import { fileSize, fullDate, relativeTime } from "@/lib/format"
 import type { ComparisonPair, VideoSubmission } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -473,7 +477,9 @@ export function CampaignSubmissions({ campaignId }: CampaignSubmissionsProps) {
           />
         )
       ) : (
-        <ul className="space-y-3">
+        /* A video card is about 320px of content, so one per row left most of
+           the width empty and turned a campaign into a long scroll. */
+        <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {items.map((submission) => {
             const src = playbackSrc(submission)
             return (
@@ -483,8 +489,18 @@ export function CampaignSubmissions({ campaignId }: CampaignSubmissionsProps) {
                   src={src}
                   isUnplayable={unplayable.has(src)}
                   showEditor={isAdmin}
-                  check={comparison.checkFor(submission, parentOf(submission))}
-                  onOpenResult={() => setOpenResult(submission)}
+                  // Admin only. The duplicate check is how the campaign is
+                  // run, not something an editor acts on: they hand work in
+                  // and see how it performed, and the analysis behind who
+                  // gets paid is the admin's to read.
+                  check={
+                    isAdmin
+                      ? comparison.checkFor(submission, parentOf(submission))
+                      : null
+                  }
+                  onOpenResult={
+                    isAdmin ? () => setOpenResult(submission) : undefined
+                  }
                   onRemove={() => setPendingDelete(submission)}
                   onRenamed={() => void refetch()}
                   onPlaybackError={() =>
@@ -510,9 +526,9 @@ export function CampaignSubmissions({ campaignId }: CampaignSubmissionsProps) {
       )}
 
       <SubmissionResultDialog
-        submission={openResult}
+        submission={isAdmin ? openResult : null}
         check={
-          openResult === null
+          openResult === null || !isAdmin
             ? null
             : comparison.checkFor(openResult, parentOf(openResult))
         }
@@ -618,8 +634,9 @@ function SubmissionCard({
   src: string
   isUnplayable: boolean
   showEditor: boolean
-  check: SubmissionCheck
-  onOpenResult: () => void
+  /** Null for an editor: the duplicate check is admin-only. */
+  check: SubmissionCheck | null
+  onOpenResult?: () => void
   onRemove: () => void
   /** Called after a successful rename, so the list re-reads. */
   onRenamed: () => void
@@ -645,7 +662,20 @@ function SubmissionCard({
   }
 
   return (
-    <div className="overflow-hidden rounded-lg border bg-background">
+    <div
+      id={submissionAnchorId(submission.id)}
+      className={cn(
+        "overflow-hidden rounded-lg border bg-background transition-[box-shadow,border-color] duration-500",
+        // Set by scrollToSubmission when a "duplicate of this" line points
+        // here, and held until a few seconds after the scroll settles. Naming
+        // the parent was never the hard part — finding its card in a grid of
+        // forty was, so the highlight has to outlast the journey there.
+        "data-[highlighted]:border-ring data-[highlighted]:ring-4 data-[highlighted]:ring-ring/50",
+      )}
+      // Reachable by keyboard once jumped to, so the highlight is not the only
+      // signal that focus moved.
+      tabIndex={-1}
+    >
       {isUnplayable ? (
         // The file uploaded fine and is safe in storage — this browser just
         // has no decoder for the container. Saying that beats a black box.
@@ -736,8 +766,11 @@ function SubmissionCard({
       </div>
 
       {/* The verdict sits under the card's own facts, so a video and what the
-          check says about it are read together rather than looked up. */}
-      <SubmissionCheckStrip check={check} onOpenResult={onOpenResult} />
+          check says about it are read together rather than looked up. Absent
+          entirely for an editor. */}
+      {check !== null && onOpenResult !== undefined && (
+        <SubmissionCheckStrip check={check} onOpenResult={onOpenResult} />
+      )}
     </div>
   )
 }

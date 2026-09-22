@@ -31,6 +31,7 @@ export class DashboardService {
         source: SubmissionSource.EDITOR,
       },
       select: {
+        id: true,
         campaignId: true,
         duplicationScore: true,
         // `uniqueness`, not the deprecated `overThreshold`: the schema notes
@@ -46,6 +47,20 @@ export class DashboardService {
     // Admins never carry a rate card, so their earnings are null by the same
     // rule as an editor whose rate is not agreed yet.
     const rateCard = user.role === Role.EDITOR ? user.rateCard : null;
+
+    // Paid for their own work, and for anything that reached Instagram. A cut
+    // handed in twice is one piece of work, so an unposted copy earns nothing;
+    // a copy that got posted is paid for the posting. Counted once either way
+    // — the same rule adminStats follows, so the two pages agree.
+    const matchedRows = await this.prisma.client.crossPlatformMatch.findMany({
+      where: { active: true, submissionId: { in: rows.map((row) => row.id) } },
+      select: { submissionId: true },
+      distinct: ["submissionId"],
+    });
+    const matchedIds = new Set(matchedRows.map((row) => row.submissionId));
+    const payableCount = rows.filter(
+      (row) => row.uniqueness === Uniqueness.UNIQUE || matchedIds.has(row.id),
+    ).length;
 
     const perCampaign = new Map<string, DashboardCampaignStat>();
     let scoreSum = 0;
@@ -99,7 +114,8 @@ export class DashboardService {
         scoredCount === 0 ? null : round1(scoreSum / scoredCount),
       campaignsContributed: perCampaign.size,
       estimatedEarnings:
-        rateCard === null ? null : round2(rateCard * rows.length),
+        rateCard === null ? null : round2(rateCard * payableCount),
+      payableCount,
       rateCard,
       perCampaign: [...perCampaign.values()].sort(
         (left, right) => right.videos - left.videos,
@@ -164,6 +180,35 @@ export class DashboardService {
       _count: { _all: true },
     });
 
+    // What is payable, and it is not every hand-in.
+    //
+    // A video earns its fee when it is the editor's own work (UNIQUE) or when
+    // it reached Instagram (matched against a tracker reel). A cut handed in
+    // twice is one piece of work, so the copy earns nothing on its own — but
+    // if that copy is the one that got posted, the posting is what is paid
+    // for. `distinct` matters: a video matched to several reels is still one
+    // video, and OR-ing the two conditions in a single `where` is what keeps
+    // a video that is both UNIQUE and matched from being counted twice.
+    const matchedRows = await this.prisma.client.crossPlatformMatch.findMany({
+      where: { active: true },
+      select: { submissionId: true },
+      distinct: ["submissionId"],
+    });
+    const matchedIds = matchedRows.map((row) => row.submissionId);
+    const payableWhere = {
+      ...editorWork,
+      OR: [
+        { uniqueness: Uniqueness.UNIQUE },
+        { id: { in: matchedIds } },
+      ],
+    };
+
+    const payableByCampaign = await this.prisma.client.videoSubmission.groupBy({
+      by: ["campaignId", "editorId"],
+      where: payableWhere,
+      _count: { _all: true },
+    });
+
     // Names for the editors who actually have work, rather than every user.
     const editorIds = [...new Set(byEditor.map((row) => row.editorId))];
     const editorRows = await this.prisma.client.user.findMany({
@@ -188,6 +233,7 @@ export class DashboardService {
       editors: 0,
       spend: null,
       pricedVideos: 0,
+      payableVideos: 0,
     });
 
     let videos = 0;
@@ -218,6 +264,11 @@ export class DashboardService {
     for (const row of editorsByCampaign) {
       const stat = perCampaign.get(row.campaignId) ?? blank(row.campaignId);
       stat.editors += 1;
+      perCampaign.set(row.campaignId, stat);
+    }
+
+    for (const row of payableByCampaign) {
+      const stat = perCampaign.get(row.campaignId) ?? blank(row.campaignId);
       // Priced per editor, not per campaign: two editors on one campaign are
       // usually on different rates, so a single multiplication would be wrong.
       const rate = rateById.get(row.editorId) ?? null;
@@ -225,14 +276,20 @@ export class DashboardService {
         stat.spend = (stat.spend ?? 0) + round2(rate * row._count._all);
         stat.pricedVideos += row._count._all;
       }
+      stat.payableVideos += row._count._all;
       perCampaign.set(row.campaignId, stat);
     }
 
-    // What the repeated work cost. Priced at the same rates, so it answers
-    // "what are we paying for cuts we already had" directly.
+    // What is being paid for repeated cuts that were nonetheless posted.
+    // Not every duplicate — an unposted one earns nothing now — so this is
+    // the cost of the same footage reaching Instagram more than once.
     const duplicatesByEditor = await this.prisma.client.videoSubmission.groupBy({
       by: ["editorId"],
-      where: { ...editorWork, uniqueness: Uniqueness.DUPLICATE },
+      where: {
+        ...editorWork,
+        uniqueness: Uniqueness.DUPLICATE,
+        id: { in: matchedIds },
+      },
       _count: { _all: true },
     });
     let duplicateSpend: number | null = null;

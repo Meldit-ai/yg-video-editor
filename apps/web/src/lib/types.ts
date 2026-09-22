@@ -330,6 +330,8 @@ export interface EditorDashboardStats {
    * submitted rather than money owed.
    */
   estimatedEarnings: number | null
+  /** Videos that earn a fee: UNIQUE, or matched on the tracker. Counted once. */
+  payableCount: number
   rateCard: number | null
   perCampaign: DashboardCampaignStat[]
 }
@@ -552,6 +554,11 @@ export interface ReelEngagement {
   likes: number | null
   comments: number | null
   shares: number | null
+  saves: number | null
+  /** likes + comments + saves + shares — what people did, not who saw it. */
+  engagement: number | null
+  /** Engagement as a percentage of views, one decimal place. */
+  engagementRate: number | null
   /** True when `views` is standing in for a missing view count. */
   viewsFromReach: boolean
 }
@@ -593,10 +600,20 @@ export interface MatchGroup {
 
 /** How the matched edits are ordered. */
 export const MATCH_GROUP_SORTS = [
-  { value: "views", label: "Most viewed" },
-  { value: "likes", label: "Most liked" },
-  { value: "reels", label: "Most posted" },
-  { value: "recent", label: "Newest" },
+  { value: "views", label: "Most viewed", hint: "Total views across every post of this cut" },
+  {
+    value: "engagement",
+    label: "Most engagement",
+    hint: "Likes, comments, saves and shares added up",
+  },
+  {
+    value: "rate",
+    label: "Best engagement rate",
+    // "Best rate" said nothing about what was being rated.
+    hint: "Engagement as a share of views — how hard the cut worked for the reach it got",
+  },
+  { value: "reels", label: "Most posted", hint: "Posted by the most accounts" },
+  { value: "recent", label: "Newest", hint: "Most recently handed in" },
 ] as const
 
 export type MatchGroupSort = (typeof MATCH_GROUP_SORTS)[number]["value"]
@@ -610,10 +627,12 @@ export interface AdminCampaignStat {
   unique: number
   unchecked: number
   editors: number
-  /** Value of this campaign's hand-ins at each editor's rate. Null if unpriced. */
+  /** What this campaign owes at each editor's rate. Null if unpriced. */
   spend: number | null
-  /** Videos priced, out of `videos`. */
+  /** Payable videos that carried a rate, out of `payableVideos`. */
   pricedVideos: number
+  /** Videos that earn a fee: UNIQUE, or matched to a tracker reel. */
+  payableVideos: number
 }
 
 export interface AdminDashboardStats {
@@ -656,4 +675,28 @@ export interface AdminDashboardStats {
     lastRunAt: string | null
     unchecked: number
   }[]
+}
+
+/**
+ * One of the editor's own videos that reached Instagram.
+ *
+ * Mirrors apps/api/src/matches/matches.types.ts. Deliberately carries nothing
+ * about how the match was made — no tracker ids, no hashes, no duplication
+ * verdicts. An editor is shown that their work was posted and what it earned.
+ */
+export interface EditorPostedVideo {
+  submissionId: string
+  fileName: string
+  uploadedAt: string
+  playbackUrl: string
+  posts: {
+    username: string
+    permalink: string | null
+    postedAt: string | null
+    engagement: ReelEngagement | null
+  }[]
+  totalEngagement: ReelEngagement & {
+    countedPosts: number
+    totalPosts: number
+  }
 }

@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 import { MulterModule } from "@nestjs/platform-express";
+import { MatchesModule } from "../matches/matches.module.js";
 import { CampaignsModule } from "../campaigns/campaigns.module.js";
 import { StorageModule } from "../storage/storage.module.js";
 import { StorageService } from "../storage/storage.service.js";
@@ -23,6 +24,8 @@ import { videoUploadMulterOptions } from "./video-upload.storage.js";
 @Module({
   imports: [
     CampaignsModule,
+    // For the editor-facing 'where did my work get posted' route.
+    MatchesModule,
     UniquenessModule,
     StorageModule,
     MulterModule.registerAsync({
