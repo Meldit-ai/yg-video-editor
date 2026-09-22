@@ -33,10 +33,15 @@ export function isCopy(row: Groupable): boolean {
 /**
  * Folds a flat list into originals and the copies beneath them.
  *
- * A plain group-by is correct because a DUPLICATE is never itself a parent —
- * the classifier only compares against UNIQUE and PARTIAL rows — so the
- * pointers form a forest of depth two. A PARTIAL is both a copy and a head,
- * which is what keeps a copy-of-a-copy under the right original.
+ * A DUPLICATE is never itself a parent — the classifier only compares against
+ * UNIQUE and PARTIAL rows — so the pointers are nearly a forest of depth two.
+ * Nearly: a PARTIAL is both a copy and a head, so a DUPLICATE can point at a
+ * PARTIAL that is itself a copy, making that branch three deep. Real data has
+ * this, and following the parent pointer to the top is what keeps such a row
+ * from vanishing from the page.
+ *
+ * Groups stay one level deep: a copy of a copy is listed beside the copy it
+ * came from, under the original both descend from.
  *
  * Order is preserved, and a row that is neither copy nor head comes back as a
  * group of one rather than disappearing.
@@ -46,15 +51,34 @@ export function groupDuplicates<T extends Groupable>(
 ): DuplicateGroup<T>[] {
   const byId = new Map(rows.map((row) => [row.id, row]))
 
+  /**
+   * The head a copy ultimately belongs under. Walks up while each parent is
+   * itself a copy; `seen` guards against a cycle, which would hang the page.
+   */
+  const headFor = (row: T): string | null => {
+    const seen = new Set<string>([row.id])
+    let parentId = row.parentId
+    while (parentId !== null) {
+      const parent = byId.get(parentId)
+      // A parent filtered out or withdrawn leaves the copy standing on its own
+      // rather than vanishing into a group nobody can see.
+      if (parent === undefined) return null
+      if (!isCopy(parent)) return parent.id
+      if (seen.has(parent.id)) return null
+      seen.add(parent.id)
+      parentId = parent.parentId
+    }
+    return null
+  }
+
   const childrenByParent = new Map<string, T[]>()
   for (const row of rows) {
     if (!isCopy(row)) continue
-    // A parent filtered out or withdrawn leaves the copy standing on its own
-    // rather than vanishing into a group nobody can see.
-    if (row.parentId === null || !byId.has(row.parentId)) continue
-    const bucket = childrenByParent.get(row.parentId) ?? []
+    const headId = headFor(row)
+    if (headId === null) continue
+    const bucket = childrenByParent.get(headId) ?? []
     bucket.push(row)
-    childrenByParent.set(row.parentId, bucket)
+    childrenByParent.set(headId, bucket)
   }
 
   const claimed = new Set<string>()

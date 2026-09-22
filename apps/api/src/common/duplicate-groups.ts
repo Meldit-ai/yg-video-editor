@@ -40,11 +40,17 @@ export function isCopy(row: Groupable): boolean {
 /**
  * Folds a flat list into originals and the copies beneath them.
  *
- * Two properties make this a plain group-by rather than a union-find: a
- * DUPLICATE is never itself a parent, because the classifier only ever
- * compares against UNIQUE and PARTIAL rows, so the pointers form a forest of
- * depth two. And a PARTIAL is both — a copy of something earlier and the head
- * of its own copies — so it appears in both roles, which is correct.
+ * A DUPLICATE is never itself a parent — the classifier only ever compares
+ * against UNIQUE and PARTIAL rows — so the pointers are nearly a forest of
+ * depth two. Nearly: a PARTIAL is both a copy of something earlier and the
+ * head of its own copies, so a DUPLICATE can point at a PARTIAL that is itself
+ * a copy, making that branch three deep. Real data has this — one row on the
+ * Traitors campaign — and following the parent pointer to the top is what
+ * keeps such a row from vanishing from the page entirely.
+ *
+ * Groups stay one level deep: a copy of a copy is listed beside the copy it
+ * came from, under the original both descend from. The alternative, nesting,
+ * would mean an accordion inside an accordion for a case that is this rare.
  *
  * Order is preserved: heads come back in the order they arrived in `rows`, so
  * a caller that sorted by date or score keeps that sorting. Rows that are
@@ -56,16 +62,38 @@ export function groupDuplicates<T extends Groupable>(
 ): DuplicateGroup<T>[] {
   const byId = new Map(rows.map((row) => [row.id, row]));
 
+  /**
+   * The head a copy ultimately belongs under.
+   *
+   * Walks up while each parent is itself a copy, so a DUPLICATE pointing at a
+   * PARTIAL that is itself a copy lands under the original both descend from.
+   * `seen` guards against a cycle: the classifier should never produce one,
+   * but a loop here would hang the page rather than mislabel a video.
+   */
+  const headFor = (row: T): string | null => {
+    const seen = new Set<string>([row.id]);
+    let parentId = row.parentId;
+    while (parentId !== null) {
+      const parent = byId.get(parentId);
+      // A parent outside `rows` — withdrawn, or filtered out by the caller —
+      // leaves the copy to stand on its own rather than vanish.
+      if (parent === undefined) return null;
+      if (!isCopy(parent)) return parent.id;
+      if (seen.has(parent.id)) return null;
+      seen.add(parent.id);
+      parentId = parent.parentId;
+    }
+    return null;
+  };
+
   const childrenByParent = new Map<string, T[]>();
   for (const row of rows) {
     if (!isCopy(row)) continue;
-    // A parent that is not in `rows` — withdrawn, or filtered out by the
-    // caller — leaves the copy to stand on its own rather than vanish into a
-    // group nobody can see.
-    if (row.parentId === null || !byId.has(row.parentId)) continue;
-    const bucket = childrenByParent.get(row.parentId) ?? [];
+    const headId = headFor(row);
+    if (headId === null) continue;
+    const bucket = childrenByParent.get(headId) ?? [];
     bucket.push(row);
-    childrenByParent.set(row.parentId, bucket);
+    childrenByParent.set(headId, bucket);
   }
 
   const claimed = new Set<string>();
