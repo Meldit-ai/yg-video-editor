@@ -12,7 +12,12 @@ try {
 }
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, {
+    // Meta signs the exact bytes it sent, so the raw body has to survive
+    // parsing: `JSON.stringify` of the parsed object is not byte-identical
+    // (key order, whitespace, unicode escapes) and the HMAC would never match.
+    rawBody: true,
+  });
 
   app.enableShutdownHooks();
   app.setGlobalPrefix("api");

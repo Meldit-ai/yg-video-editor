@@ -10,6 +10,7 @@ import { ReelsModule } from "./reels/reels.module.js";
 import { SharesModule } from "./shares/shares.module.js";
 import { DashboardModule } from "./dashboard/dashboard.module.js";
 import { RatesModule } from "./rates/rates.module.js";
+import { WhatsAppModule } from "./whatsapp/whatsapp.module.js";
 import { ComparisonsModule } from "./comparisons/comparisons.module.js";
 import { UniquenessModule } from "./uniqueness/uniqueness.module.js";
 import { TrackerModule } from "./tracker/tracker.module.js";
@@ -29,6 +30,7 @@ import { RolesGuard } from "./auth/guards/roles.guard.js";
     UniquenessModule,
     DashboardModule,
     RatesModule,
+    WhatsAppModule,
     SharesModule,
     MatchesModule,
     ReelsModule,
