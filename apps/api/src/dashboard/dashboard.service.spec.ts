@@ -169,7 +169,17 @@ describe("DashboardService.adminStats", () => {
       uniqueness: Uniqueness | null;
       _count: { _all: number };
     }>;
-    editorsByCampaign?: Array<{ campaignId: string; editorId: string }>;
+    editorsByCampaign?: Array<{
+      campaignId: string;
+      editorId: string;
+      _count: { _all: number };
+    }>;
+    duplicatesByEditor?: Array<{
+      editorId: string;
+      _count: { _all: number };
+    }>;
+    /** Rate card for the mocked editor, behind the spend figures. */
+    rateCard?: number | null;
     clusters?: Array<{
       topMatchSubmissionId: string | null;
       _count: { _all: number };
@@ -185,7 +195,9 @@ describe("DashboardService.adminStats", () => {
       .mockResolvedValueOnce(options.byLabel ?? [])
       .mockResolvedValueOnce(options.byEditor ?? [])
       .mockResolvedValueOnce(options.clusters ?? [])
-      .mockResolvedValueOnce(options.editorsByCampaign ?? []);
+      .mockResolvedValueOnce(options.editorsByCampaign ?? [])
+      // Duplicates per editor, for what the repeated work cost.
+      .mockResolvedValueOnce(options.duplicatesByEditor ?? []);
     const findFirstRun = vi
       .fn()
       .mockResolvedValue(
@@ -203,9 +215,12 @@ describe("DashboardService.adminStats", () => {
         },
         user: {
           count: vi.fn().mockResolvedValue(3),
-          findMany: vi.fn().mockResolvedValue([{ id: "u1", name: "Ravi" }]),
+          findMany: vi
+            .fn()
+            .mockResolvedValue([
+              { id: "u1", name: "Ravi", rateCard: options.rateCard ?? null },
+            ]),
         },
-        campaignRate: { count: vi.fn().mockResolvedValue(1) },
         videoSubmission: {
           groupBy,
           count: vi.fn().mockResolvedValue(0),
@@ -240,7 +255,9 @@ describe("DashboardService.adminStats", () => {
         { campaignId: "c1", uniqueness: Uniqueness.DUPLICATE, _count: { _all: 64 } },
         { campaignId: "c1", uniqueness: Uniqueness.PARTIAL, _count: { _all: 1 } },
       ],
-      editorsByCampaign: [{ campaignId: "c1", editorId: "u1" }],
+      editorsByCampaign: [
+        { campaignId: "c1", editorId: "u1", _count: { _all: 97 } },
+      ],
     });
     const stats = await service.adminStats();
     expect(stats.unique).toBe(32);
@@ -348,14 +365,65 @@ describe("DashboardService.adminStats", () => {
     expect(result.repetition.worst).toBeNull();
   });
 
+  it("prices a campaign at each editor's own rate", async () => {
+    // Two editors on one campaign are usually on different rates, so a single
+    // multiplication over the campaign's total would be wrong.
+    const { service } = adminServiceWith({
+      byLabel: [
+        { campaignId: "c1", uniqueness: Uniqueness.UNIQUE, _count: { _all: 9 } },
+      ],
+      editorsByCampaign: [
+        { campaignId: "c1", editorId: "u1", _count: { _all: 9 } },
+      ],
+      rateCard: 1500,
+    });
+    const stats = await service.adminStats();
+    expect(stats.perCampaign[0]?.spend).toBe(13500);
+    expect(stats.perCampaign[0]?.pricedVideos).toBe(9);
+    expect(stats.totalSpend).toBe(13500);
+  });
+
+  it("leaves spend null when no rate is agreed, not zero", async () => {
+    // Zero would read as "this work is worth nothing" rather than "nobody has
+    // agreed what it is worth".
+    const { service } = adminServiceWith({
+      byLabel: [
+        { campaignId: "c1", uniqueness: Uniqueness.UNIQUE, _count: { _all: 9 } },
+      ],
+      editorsByCampaign: [
+        { campaignId: "c1", editorId: "u1", _count: { _all: 9 } },
+      ],
+      rateCard: null,
+    });
+    const stats = await service.adminStats();
+    expect(stats.perCampaign[0]?.spend).toBeNull();
+    expect(stats.totalSpend).toBeNull();
+  });
+
+  it("prices the repeated work separately", async () => {
+    // The cost of the problem the duplicate checking exists to find.
+    const { service } = adminServiceWith({
+      byLabel: [
+        { campaignId: "c1", uniqueness: Uniqueness.DUPLICATE, _count: { _all: 4 } },
+      ],
+      editorsByCampaign: [
+        { campaignId: "c1", editorId: "u1", _count: { _all: 4 } },
+      ],
+      duplicatesByEditor: [{ editorId: "u1", _count: { _all: 4 } }],
+      rateCard: 1500,
+    });
+    const stats = await service.adminStats();
+    expect(stats.duplicateSpend).toBe(6000);
+  });
+
   it("counts distinct editors, not their rows", async () => {
     const { service } = adminServiceWith({
       byLabel: [
         { campaignId: "c1", uniqueness: Uniqueness.UNIQUE, _count: { _all: 9 } },
       ],
       editorsByCampaign: [
-        { campaignId: "c1", editorId: "u1" },
-        { campaignId: "c1", editorId: "u2" },
+        { campaignId: "c1", editorId: "u1", _count: { _all: 5 } },
+        { campaignId: "c1", editorId: "u2", _count: { _all: 4 } },
       ],
     });
     const stats = await service.adminStats();

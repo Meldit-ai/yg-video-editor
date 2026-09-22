@@ -58,67 +58,7 @@ model User {
   /// Vendor shares this user sent.
   vendorShares VendorShare[] @relation("VendorShareAuthor")
 
-  /// Per-campaign rates this editor has proposed or been granted.
-  campaignRates CampaignRate[] @relation("CampaignRateEditor")
-
-  /// Rate decisions this user made, as an admin.
-  rateDecisions CampaignRate[] @relation("CampaignRateDecider")
-
   @@index([active])
-}
-
-/// Where a per-campaign rate is in the propose-approve cycle.
-enum RateStatus {
-  /// The editor has asked for this rate; it does not pay yet.
-  PENDING
-  /// An admin agreed it. This is the rate that pays.
-  APPROVED
-  /// An admin declined it. The previous approved rate, if any, still pays.
-  REJECTED
-}
-
-/// One editor's rate on one campaign.
-///
-/// Separate from User.rateCard, which stays the editor's default across every
-/// campaign. An editor proposes here and an admin approves: a proposal never
-/// changes what is owed until it is approved, so the dashboard's "value
-/// submitted" can never be raised by the person being paid.
-model CampaignRate {
-  id String @id @default(cuid())
-
-  campaignId String
-  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-
-  editorId String
-  editor   User   @relation("CampaignRateEditor", fields: [editorId], references: [id])
-
-  /// The rate being asked for, per video.
-  amount Float
-
-  status RateStatus @default(PENDING)
-
-  /// What was paying when this was proposed, so a reader can see the change
-  /// being asked for without reconstructing it from history.
-  previousAmount Float?
-
-  /// Why the editor is asking, and what the admin said. Both optional.
-  editorNote String?
-  adminNote  String?
-
-  /// Who decided, and when. Null while PENDING.
-  decidedById String?
-  decidedBy   User?     @relation("CampaignRateDecider", fields: [decidedById], references: [id])
-  decidedAt   DateTime?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  /// One live proposal per editor per campaign. Superseded rows are deleted
-  /// rather than kept, so this stays the current ask, not an audit log.
-  @@unique([campaignId, editorId])
-  /// The admin queue: everything awaiting a decision, oldest first.
-  @@index([status, createdAt])
-  @@index([editorId, status])
 }
 
 model Campaign {
@@ -140,11 +80,6 @@ model Campaign {
   /// never blocked. Defaults to 90 — the engine's MATCH band floor.
   duplicationThreshold Float @default(90)
 
-  /// What this campaign pays per video, before any per-editor rate. Null means
-  /// nothing is agreed at campaign level and an editor falls back to their own
-  /// User.rateCard, which is how every campaign behaved before rates existed.
-  defaultRate Float?
-
   /// Soft-delete flag — see User.active. Distinct from `status`: a campaign
   /// can be INACTIVE (paused) while still active (not deleted).
   active Boolean @default(true)
@@ -160,9 +95,6 @@ model Campaign {
 
   /// Vendor shares sent from this campaign's feed.
   vendorShares VendorShare[]
-
-  /// Per-editor rates proposed or agreed on this campaign.
-  rates CampaignRate[]
 
   /// Instagram reels pulled from the tracker, and the runs matching against them.
   reels     CampaignReel[]

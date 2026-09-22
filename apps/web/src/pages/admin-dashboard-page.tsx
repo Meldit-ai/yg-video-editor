@@ -16,7 +16,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { errorMessage } from "@/hooks/use-collection"
 import { api } from "@/lib/api"
-import { relativeTime } from "@/lib/format"
+import { relativeTime, rupees } from "@/lib/format"
 import type { AdminDashboardStats } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
@@ -146,15 +146,24 @@ function AdminDashboard({ stats }: { stats: AdminDashboardStats }) {
           }
           tone={stats.repetition.clusters > 0 ? "warning" : "default"}
         />
-        {/* A number worth acting on rather than only reading, so it links to
-            where the acting happens. */}
+        {/* The money question the duplicate checking exists to answer: what
+            are we paying for cuts we already had? */}
         <Stat
           icon={IndianRupeeIcon}
-          label="Rate requests"
-          value={String(stats.pendingRates)}
-          hint={stats.pendingRates === 0 ? "Nothing waiting" : "Waiting on you"}
-          tone={stats.pendingRates > 0 ? "warning" : "default"}
-          to={stats.pendingRates > 0 ? "/users" : undefined}
+          label="Value submitted"
+          value={stats.totalSpend === null ? "—" : rupees(stats.totalSpend)}
+          hint={
+            stats.totalSpend === null
+              ? "No rates set"
+              : stats.duplicateSpend === null || stats.duplicateSpend === 0
+                ? "None of it repeated"
+                : `${rupees(stats.duplicateSpend)} of it repeated work`
+          }
+          tone={
+            stats.duplicateSpend !== null && stats.duplicateSpend > 0
+              ? "warning"
+              : "default"
+          }
         />
       </div>
 
@@ -178,6 +187,7 @@ function AdminDashboard({ stats }: { stats: AdminDashboardStats }) {
                 </span>
                 <span>Duplicate</span>
               </span>
+              <span className="w-28 shrink-0 text-right">Value</span>
             </div>
             {stats.perCampaign.map((row) => (
               <div
@@ -220,6 +230,29 @@ function AdminDashboard({ stats }: { stats: AdminDashboardStats }) {
                     >
                       ({row.unchecked}?)
                     </span>
+                  )}
+                </span>
+                {/* Unpriced reads as a dash, not zero: no rate agreed is a
+                    different fact from work that is worth nothing. */}
+                <span
+                  className="numeric w-28 shrink-0 text-right text-[13px]"
+                  title={
+                    row.spend === null
+                      ? "No rate set for the editors on this campaign"
+                      : row.pricedVideos < row.videos
+                        ? `${row.pricedVideos} of ${row.videos} videos priced`
+                        : undefined
+                  }
+                >
+                  {row.spend === null ? (
+                    <span className="text-muted-foreground">—</span>
+                  ) : (
+                    <>
+                      {rupees(row.spend)}
+                      {row.pricedVideos < row.videos && (
+                        <span className="text-muted-foreground">*</span>
+                      )}
+                    </>
                   )}
                 </span>
               </div>

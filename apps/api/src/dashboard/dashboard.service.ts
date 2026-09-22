@@ -123,7 +123,6 @@ export class DashboardService {
     const [
       activeCampaigns,
       editors,
-      pendingRates,
       byLabel,
       campaigns,
       byEditor,
@@ -133,7 +132,6 @@ export class DashboardService {
       this.prisma.client.user.count({
         where: { role: Role.EDITOR, active: true },
       }),
-      this.prisma.client.campaignRate.count({ where: { status: "PENDING" } }),
       // One grouped read rather than a count per label.
       this.prisma.client.videoSubmission.groupBy({
         by: ["campaignId", "uniqueness"],
@@ -166,6 +164,18 @@ export class DashboardService {
       _count: { _all: true },
     });
 
+    // Names for the editors who actually have work, rather than every user.
+    const editorIds = [...new Set(byEditor.map((row) => row.editorId))];
+    const editorRows = await this.prisma.client.user.findMany({
+      where: { id: { in: editorIds } },
+      select: { id: true, name: true, rateCard: true },
+    });
+    const nameById = new Map(editorRows.map((row) => [row.id, row.name]));
+    // An admin carries no rate card, by the same rule statsFor follows.
+    const rateById = new Map(
+      editorRows.map((row) => [row.id, row.rateCard ?? null]),
+    );
+
     const titleById = new Map(campaigns.map((row) => [row.id, row.title]));
     const perCampaign = new Map<string, AdminCampaignStat>();
     const blank = (campaignId: string): AdminCampaignStat => ({
@@ -176,6 +186,8 @@ export class DashboardService {
       unique: 0,
       unchecked: 0,
       editors: 0,
+      spend: null,
+      pricedVideos: 0,
     });
 
     let videos = 0;
@@ -206,16 +218,38 @@ export class DashboardService {
     for (const row of editorsByCampaign) {
       const stat = perCampaign.get(row.campaignId) ?? blank(row.campaignId);
       stat.editors += 1;
+      // Priced per editor, not per campaign: two editors on one campaign are
+      // usually on different rates, so a single multiplication would be wrong.
+      const rate = rateById.get(row.editorId) ?? null;
+      if (rate !== null) {
+        stat.spend = (stat.spend ?? 0) + round2(rate * row._count._all);
+        stat.pricedVideos += row._count._all;
+      }
       perCampaign.set(row.campaignId, stat);
     }
 
-    // Names for the editors who actually have work, rather than every user.
-    const editorIds = [...new Set(byEditor.map((row) => row.editorId))];
-    const editorNames = await this.prisma.client.user.findMany({
-      where: { id: { in: editorIds } },
-      select: { id: true, name: true },
+    // What the repeated work cost. Priced at the same rates, so it answers
+    // "what are we paying for cuts we already had" directly.
+    const duplicatesByEditor = await this.prisma.client.videoSubmission.groupBy({
+      by: ["editorId"],
+      where: { ...editorWork, uniqueness: Uniqueness.DUPLICATE },
+      _count: { _all: true },
     });
-    const nameById = new Map(editorNames.map((row) => [row.id, row.name]));
+    let duplicateSpend: number | null = null;
+    for (const row of duplicatesByEditor) {
+      const rate = rateById.get(row.editorId) ?? null;
+      if (rate === null) continue;
+      duplicateSpend = round2((duplicateSpend ?? 0) + rate * row._count._all);
+    }
+
+    const priced = [...perCampaign.values()].filter(
+      (stat) => stat.spend !== null,
+    );
+    const totalSpend =
+      priced.length === 0
+        ? null
+        : round2(priced.reduce((sum, stat) => sum + (stat.spend ?? 0), 0));
+
 
     const editorStats = new Map<
       string,
@@ -319,7 +353,8 @@ export class DashboardService {
       duplicates,
       unique,
       unchecked,
-      pendingRates,
+      totalSpend,
+      duplicateSpend,
       perCampaign: [...perCampaign.values()].sort(
         (left, right) => right.videos - left.videos,
       ),

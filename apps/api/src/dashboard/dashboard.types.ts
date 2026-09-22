@@ -60,6 +60,17 @@ export interface AdminCampaignStat {
   unique: number;
   unchecked: number;
   editors: number;
+  /**
+   * What this campaign's hand-ins are worth, at each editor's rate card.
+   *
+   * Null when no editor who worked on it has a rate agreed — which is not the
+   * same as zero. Counts every hand-in, including duplicates: whether a
+   * duplicate is payable is a judgement nothing here models, so this is the
+   * value of work submitted rather than money owed.
+   */
+  spend: number | null;
+  /** Videos priced, out of `videos` — so a partial figure reads as partial. */
+  pricedVideos: number;
 }
 
 /**
@@ -76,8 +87,16 @@ export interface AdminDashboardStats {
   duplicates: number;
   unique: number;
   unchecked: number;
-  /** Rate asks waiting on an admin — something to act on, not just a number. */
-  pendingRates: number;
+  /** Every campaign's spend added up. Null when nothing could be priced. */
+  totalSpend: number | null;
+  /**
+   * What the duplicates alone are worth.
+   *
+   * The one money figure an admin can act on: repeated cuts being paid for at
+   * the same rate as original work is the cost of the problem the duplicate
+   * checking exists to find.
+   */
+  duplicateSpend: number | null;
   /** Campaigns by size, largest first. */
   perCampaign: AdminCampaignStat[];
 

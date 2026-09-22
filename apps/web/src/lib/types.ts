@@ -601,39 +601,6 @@ export const MATCH_GROUP_SORTS = [
 
 export type MatchGroupSort = (typeof MATCH_GROUP_SORTS)[number]["value"]
 
-/** Mirrors apps/api/src/rates/rates.types.ts. */
-export type RateStatus = "PENDING" | "APPROVED" | "REJECTED"
-
-export interface CampaignRate {
-  id: string
-  campaignId: string
-  campaignTitle: string
-  editorId: string
-  editorName: string
-  amount: number
-  status: RateStatus
-  previousAmount: number | null
-  editorNote: string | null
-  adminNote: string | null
-  decidedByName: string | null
-  decidedAt: string | null
-  createdAt: string
-  updatedAt: string
-}
-
-export interface EffectiveRate {
-  campaignId: string
-  campaignTitle: string
-  /** What actually pays. Never the pending ask. */
-  effective: number | null
-  source:
-    | "APPROVED_CAMPAIGN_RATE"
-    | "CAMPAIGN_DEFAULT"
-    | "USER_RATE_CARD"
-    | "NONE"
-  pending: CampaignRate | null
-}
-
 /** Mirrors apps/api/src/dashboard/dashboard.types.ts. */
 export interface AdminCampaignStat {
   campaignId: string
@@ -643,6 +610,10 @@ export interface AdminCampaignStat {
   unique: number
   unchecked: number
   editors: number
+  /** Value of this campaign's hand-ins at each editor's rate. Null if unpriced. */
+  spend: number | null
+  /** Videos priced, out of `videos`. */
+  pricedVideos: number
 }
 
 export interface AdminDashboardStats {
@@ -652,7 +623,10 @@ export interface AdminDashboardStats {
   duplicates: number
   unique: number
   unchecked: number
-  pendingRates: number
+  /** Every campaign's spend added up. Null when nothing could be priced. */
+  totalSpend: number | null
+  /** What the duplicates alone are worth — the cost of repeated work. */
+  duplicateSpend: number | null
   perCampaign: AdminCampaignStat[]
   perEditor: {
     editorId: string
