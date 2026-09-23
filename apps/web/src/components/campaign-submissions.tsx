@@ -42,6 +42,7 @@ import { errorMessage } from "@/hooks/use-collection"
 import { useComparison } from "@/hooks/use-comparison"
 import type { SubmissionCheck } from "@/hooks/use-comparison"
 import { useNearViewport } from "@/hooks/use-near-viewport"
+import { formatDuration, useVideoPreview } from "@/hooks/use-video-preview"
 import { usePagedCollection } from "@/hooks/use-paged-collection"
 import { UploadCancelledError, api } from "@/lib/api"
 import {
@@ -639,34 +640,67 @@ function UploadRow({
   const sending = upload.phase === "sending"
   const done = sending ? percent(upload.fraction) : 100
   const sent = sending ? upload.file.size * upload.fraction : upload.file.size
+  // Read from the file in the browser, so the editor can see what they picked
+  // rather than trusting a file name. Nothing is uploaded to work this out.
+  const { posterUrl, durationSeconds, isReading } = useVideoPreview(upload.file)
+  const duration = formatDuration(durationSeconds)
 
   return (
-    <div className="space-y-2 rounded-lg border bg-muted/20 p-3">
-      <div className="flex items-center gap-2 text-[13px]">
-        <Loader2Icon className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
-        <span className="truncate font-medium">{upload.file.name}</span>
-        <span className="numeric ml-auto shrink-0 text-muted-foreground">
-          {sending ? `${done}%` : "Finishing…"}
-        </span>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 px-2 text-muted-foreground hover:text-foreground"
-          onClick={onCancel}
-        >
-          Cancel
-        </Button>
+    <div className="flex gap-3 rounded-lg border bg-muted/20 p-3">
+      {/* The still, so a wrong cut from a folder of near-identical names is
+          caught now rather than after a 2 GB upload. A container the browser
+          cannot decode falls back to the icon. */}
+      <div className="relative aspect-video w-28 shrink-0 overflow-hidden rounded-md bg-black/60">
+        {posterUrl !== null ? (
+          <img
+            src={posterUrl}
+            alt=""
+            className="size-full object-cover"
+          />
+        ) : (
+          <div className="flex size-full items-center justify-center">
+            {isReading ? (
+              <Loader2Icon className="size-4 animate-spin text-muted-foreground" />
+            ) : (
+              <FileVideoIcon className="size-4 text-muted-foreground" />
+            )}
+          </div>
+        )}
+        {duration !== null && (
+          <span className="numeric absolute right-1 bottom-1 rounded bg-black/70 px-1 text-[10px] text-white">
+            {duration}
+          </span>
+        )}
       </div>
 
-      {/* Indeterminate would be more honest for the finishing phase, but a bar
-          that switches modes at the end reads as a glitch — it holds full. */}
-      <Progress value={done} className="h-1.5" />
+      <div className="flex min-w-0 flex-1 flex-col gap-2">
+        <div className="flex items-center gap-2 text-[13px]">
+          <Loader2Icon className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
+          <span className="truncate font-medium">{upload.file.name}</span>
+          <span className="numeric ml-auto shrink-0 text-muted-foreground">
+            {sending ? `${done}%` : "Finishing…"}
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 text-muted-foreground hover:text-foreground"
+            onClick={onCancel}
+          >
+            Cancel
+          </Button>
+        </div>
 
-      <p className="numeric text-[11px] text-muted-foreground">
-        {sending
-          ? `${fileSize(sent)} of ${fileSize(upload.file.size)}`
-          : `${fileSize(upload.file.size)} uploaded — saving to storage`}
-      </p>
+        {/* Indeterminate would be more honest for the finishing phase, but a
+            bar that switches modes at the end reads as a glitch — it holds
+            full. */}
+        <Progress value={done} className="h-1.5" />
+
+        <p className="numeric mt-auto text-[11px] text-muted-foreground">
+          {sending
+            ? `${fileSize(sent)} of ${fileSize(upload.file.size)}`
+            : `${fileSize(upload.file.size)} uploaded — saving to storage`}
+        </p>
+      </div>
     </div>
   )
 }
