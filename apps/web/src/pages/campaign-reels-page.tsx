@@ -16,6 +16,7 @@ import { motion, useReducedMotion } from "motion/react"
 import { toast } from "sonner"
 
 import { EmptyState } from "@/components/empty-state"
+import { ListSentinel } from "@/components/list-sentinel"
 import { MetaDivider, PageHeader } from "@/components/page-header"
 import { UniquenessBadge } from "@/components/status-badge"
 import { Button } from "@/components/ui/button"
@@ -23,6 +24,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { errorMessage } from "@/hooks/use-collection"
 import { useNearViewport } from "@/hooks/use-near-viewport"
+import { usePagedList } from "@/hooks/use-paged-list"
 import { api } from "@/lib/api"
 import { fullDate, shortDate, compact } from "@/lib/format"
 import type {
@@ -134,6 +136,10 @@ export function CampaignReelsPage() {
   )
   const checked = reels.filter((reel) => reel.uniqueness !== null)
   const copies = checked.filter((reel) => reel.uniqueness === "DUPLICATE")
+  // A campaign holds thousands of these. The whole list still arrives in one
+  // response — that is the server's side of this and a separate change — but
+  // only a page of it is rendered, so the page is usable while it does.
+  const paged = usePagedList(groups)
 
   return (
     <motion.div
@@ -229,7 +235,7 @@ export function CampaignReelsPage() {
             threshold={campaign?.duplicationThreshold ?? 0}
           />
           <ul className="flex flex-col gap-3">
-            {groups.map((group, index) => (
+            {paged.visible.map((group, index) => (
               <ReelGroup
                 key={group.head.id}
                 head={group.head}
@@ -238,6 +244,14 @@ export function CampaignReelsPage() {
               />
             ))}
           </ul>
+          {paged.hasMore && (
+            <ListSentinel
+              ref={paged.sentinelRef}
+              shown={paged.shown}
+              total={groups.length}
+              noun="originals"
+            />
+          )}
         </>
       )}
     </motion.div>

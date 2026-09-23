@@ -11,12 +11,18 @@ import { SubmissionsService } from "./submissions.service.js";
 const submissionDelegate = {
   findMany: vi.fn(),
   findFirst: vi.fn(),
+  count: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
 };
 
 const prisma = {
-  client: { videoSubmission: submissionDelegate },
+  client: {
+    videoSubmission: submissionDelegate,
+    // The delegates here already answer with promises, so the page read's
+    // transaction is the two of them settling together.
+    $transaction: (operations: Promise<unknown>[]) => Promise.all(operations),
+  },
 } as unknown as PrismaService;
 
 const storageMock = {
@@ -80,6 +86,7 @@ describe("SubmissionsService", () => {
     storageMock.presignPlaybackUrl.mockResolvedValue(
       "https://signed.example/v",
     );
+    submissionDelegate.count.mockResolvedValue(0);
     service = new SubmissionsService(prisma, storage, uniqueness);
   });
 
@@ -97,7 +104,7 @@ describe("SubmissionsService", () => {
             editorId: "usr_1",
             source: "EDITOR",
           },
-          orderBy: [{ createdAt: "desc" }],
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         }),
       );
     });
@@ -117,6 +124,7 @@ describe("SubmissionsService", () => {
             { uniqueness: { sort: "asc", nulls: "last" } },
             { duplicationScore: { sort: "asc", nulls: "last" } },
             { createdAt: "desc" },
+            { id: "desc" },
           ],
         }),
       );
@@ -133,6 +141,7 @@ describe("SubmissionsService", () => {
             { uniqueness: { sort: "desc", nulls: "last" } },
             { duplicationScore: { sort: "desc", nulls: "last" } },
             { createdAt: "desc" },
+            { id: "desc" },
           ],
         }),
       );
@@ -186,7 +195,9 @@ describe("SubmissionsService", () => {
     it("hands back a signed playback URL rather than the object key", async () => {
       submissionDelegate.findMany.mockResolvedValue([row()]);
 
-      const [first] = await service.findAll("cmp_1", editor);
+      const {
+        items: [first],
+      } = await service.findAll("cmp_1", editor);
 
       expect(storageMock.presignPlaybackUrl).toHaveBeenCalledWith(
         "campaigns/cmp_1/abc.mp4",
@@ -202,6 +213,54 @@ describe("SubmissionsService", () => {
       // handle that outlives a signature.
       expect(first).not.toHaveProperty("objectKey");
       expect(first!.playbackExpiresAt.getTime()).toBeGreaterThan(Date.now());
+    });
+
+    it("reads one page and says where the next one starts", async () => {
+      submissionDelegate.findMany.mockResolvedValue([row()]);
+      submissionDelegate.count.mockResolvedValue(97);
+
+      const page = await service.findAll("cmp_1", admin, { take: 1, skip: 24 });
+
+      expect(submissionDelegate.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 1, skip: 24 }),
+      );
+      // The count is of the whole filtered list, not of the page: a reader is
+      // told there are 97 before 97 have been loaded.
+      expect(page.total).toBe(97);
+      expect(page.nextSkip).toBe(25);
+    });
+
+    it("ends the list rather than pointing past it", async () => {
+      submissionDelegate.findMany.mockResolvedValue([row(), row({ id: "s2" })]);
+      submissionDelegate.count.mockResolvedValue(12);
+
+      const page = await service.findAll("cmp_1", admin, { take: 5, skip: 10 });
+
+      expect(page.nextSkip).toBeNull();
+    });
+
+    it("counts the same list it returns, not every video on the campaign", async () => {
+      submissionDelegate.findMany.mockResolvedValue([]);
+
+      await service.findAll("cmp_1", editor, { uniqueness: "DUPLICATE" });
+
+      // Same `where` for both halves, or "24 of 97" counts videos this caller
+      // cannot see and the list never reaches its own total.
+      const read = submissionDelegate.findMany.mock.calls[0]?.[0];
+      const counted = submissionDelegate.count.mock.calls[0]?.[0];
+      expect(counted?.where).toEqual(read?.where);
+    });
+
+    it("hands back the whole list when no page is asked for", async () => {
+      submissionDelegate.findMany.mockResolvedValue([row()]);
+      submissionDelegate.count.mockResolvedValue(1);
+
+      const page = await service.findAll("cmp_1", admin);
+
+      expect(submissionDelegate.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ take: undefined, skip: undefined }),
+      );
+      expect(page.nextSkip).toBeNull();
     });
   });
 

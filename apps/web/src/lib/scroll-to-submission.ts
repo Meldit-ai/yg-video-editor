@@ -24,6 +24,34 @@ const SCROLL_SETTLE_TIMEOUT_MS = 1200
 /** Timers for the card currently highlighted, so a second jump can cancel them. */
 let pending: { node: HTMLElement; timers: number[] } | null = null
 
+/**
+ * Asks the list holding a submission to render it, for a card that is in the
+ * list but below the last page rendered so far.
+ *
+ * Registered by the list itself: this file knows how to reach a card, not how
+ * far down anything has been paged. Answers whether the submission is in the
+ * list at all, which is the same question a missing DOM node used to answer on
+ * its own — before paging, "not rendered" and "not in the list" were the same
+ * thing, and they no longer are.
+ */
+let revealer: ((submissionId: string) => boolean) | null = null
+
+export function setSubmissionRevealer(
+  reveal: ((submissionId: string) => boolean) | null,
+): void {
+  revealer = reveal
+}
+
+/**
+ * How long to keep watching for a revealed card before giving up.
+ *
+ * Generous because a reveal can mean several round trips: the card may be
+ * pages down a list that is read from the server a page at a time. Bounded
+ * because a jump that lands a minute later is worse than one that quietly
+ * does nothing.
+ */
+const REVEAL_TIMEOUT_MS = 10_000
+
 function clearPending(): void {
   if (pending === null) return
   for (const timer of pending.timers) window.clearTimeout(timer)
@@ -44,7 +72,13 @@ function clearPending(): void {
  */
 export function scrollToSubmission(submissionId: string): boolean {
   const node = document.getElementById(submissionAnchorId(submissionId))
-  if (node === null) return false
+  if (node === null) {
+    // Not rendered. Either it is not in this list at all, or the list has not
+    // paged down to it yet — only the list can tell the two apart.
+    if (revealer?.(submissionId) !== true) return false
+    waitForCard(submissionId, Date.now() + REVEAL_TIMEOUT_MS)
+    return true
+  }
 
   // A second jump while one is still lit: drop the first rather than letting
   // its timer clear the highlight off the new card.
@@ -81,4 +115,22 @@ export function scrollToSubmission(submissionId: string): boolean {
 
   pending = { node, timers }
   return true
+}
+
+/**
+ * Retries the jump once the revealed card has been rendered.
+ *
+ * A reveal is a state change in the list — and often a request for the page
+ * the card is on — so the card does not exist in the tick the click did.
+ * Polling rather than waiting a fixed delay keeps the jump immediate on a
+ * fast render and still arrives after a slow round trip; the deadline leaves
+ * the reader where they are instead of scrolling somewhere unrelated later.
+ */
+function waitForCard(submissionId: string, deadline: number): void {
+  if (document.getElementById(submissionAnchorId(submissionId)) !== null) {
+    scrollToSubmission(submissionId)
+    return
+  }
+  if (Date.now() >= deadline) return
+  requestAnimationFrame(() => waitForCard(submissionId, deadline))
 }

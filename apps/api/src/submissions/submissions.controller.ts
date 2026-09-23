@@ -17,6 +17,7 @@ import { RenameSubmissionDto } from "./dto/rename-submission.dto.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { CurrentUser } from "../auth/decorators/current-user.decorator.js";
 import { CampaignAccessGuard } from "../campaigns/guards/campaign-access.guard.js";
+import type { Page } from "../common/pagination.js";
 import { UploadSizeGuard } from "./guards/upload-size.guard.js";
 import { VIDEO_FIELD_NAME } from "./submissions.constants.js";
 import { MatchesService } from "../matches/matches.service.js";
@@ -48,14 +49,18 @@ export class SubmissionsController {
    *
    * `?sort=original` is the campaign feed's ordering (least duplicated at the
    * top); `?flagged=true` narrows it to videos that met the campaign's
-   * accepted-duplication level.
+   * accepted-duplication level. `?take=` and `?skip=` read one page of the
+   * result; without `take` the whole list comes back, as it always did.
+   *
+   * Answers a page envelope either way, so a caller reads `items` and `total`
+   * without having to know whether it asked for a page.
    */
   @Get()
   findAll(
     @Param("campaignId") campaignId: string,
     @CurrentUser() user: AuthenticatedUser,
     @Query() query: ListSubmissionsQueryDto,
-  ): Promise<VideoSubmissionDto[]> {
+  ): Promise<Page<VideoSubmissionDto>> {
     return this.submissions.findAll(campaignId, user, query);
   }
 

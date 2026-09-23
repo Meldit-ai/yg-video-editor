@@ -11,6 +11,7 @@ import {
 import { motion, useReducedMotion } from "motion/react"
 
 import { EmptyState } from "@/components/empty-state"
+import { ListSentinel } from "@/components/list-sentinel"
 import { VendorShareDialog } from "@/components/vendor-share-dialog"
 import { MetaDivider } from "@/components/page-header"
 import { UniquenessBadge } from "@/components/status-badge"
@@ -24,8 +25,9 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { Skeleton } from "@/components/ui/skeleton"
-import { useCollection } from "@/hooks/use-collection"
+import { useWholeCollection } from "@/hooks/use-paged-collection"
 import { useNearViewport } from "@/hooks/use-near-viewport"
+import { usePagedList } from "@/hooks/use-paged-list"
 import { fileSize, relativeTime } from "@/lib/format"
 import {
   MAX_SHARE_MEDIA,
@@ -95,9 +97,14 @@ export function CampaignFeed({ campaign }: { campaign: Campaign }) {
   const [view, setView] = useState<FeedView>("all")
   const reduceMotion = useReducedMotion()
 
-  const { items, isLoading, error, refetch } = useCollection<VideoSubmission>(
-    feedPath(campaign.id, sort, flaggedOnly),
-  )
+  // Read whole rather than a page at a time: the folding below and the
+  // ordering it applies are answers about the campaign, and computing them
+  // from a page would rank the videos by whatever happened to be loaded.
+  // What keeps the page usable is that only a slice of it is rendered.
+  const { items, isLoading, error, refetch } =
+    useWholeCollection<VideoSubmission>(
+      feedPath(campaign.id, sort, flaggedOnly),
+    )
 
   // Selection survives a re-sort but not a video leaving the list, so a share
   // can never carry an id that is no longer on screen.
@@ -163,6 +170,18 @@ export function CampaignFeed({ campaign }: { campaign: Campaign }) {
   )
 
   const checkedCount = items.filter((item) => item.uniqueness !== null).length
+
+  // One per view, because the two arrange the same videos into different rows
+  // and paging one by the other's position would cut a list short. Both keys
+  // carry the sort and the filter: those really are a different list, and the
+  // reader's place in the old one means nothing in the new one.
+  const pagedGroups = usePagedList(groups, {
+    resetKey: `grouped:${sort}:${String(flaggedOnly)}`,
+  })
+  const pagedFlat = usePagedList(flat, {
+    resetKey: `all:${sort}:${String(flaggedOnly)}`,
+  })
+  const paged = view === "grouped" ? pagedGroups : pagedFlat
 
   return (
     <section className="space-y-2.5">
@@ -278,45 +297,55 @@ export function CampaignFeed({ campaign }: { campaign: Campaign }) {
           }
         />
       ) : (
-        <ul
-          className={cn(
-            "grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4",
-            // Room for the floating selection bar, which otherwise covers the
-            // last row of cards.
-            visibleSelected.length > 0 && "pb-20",
-          )}
-        >
-          {view === "grouped"
-            ? groups.map((group) => (
-                <FeedGroup
-                  key={group.head.id}
-                  head={group.head}
-                  copies={group.children}
-                  threshold={campaign.duplicationThreshold}
-                  selected={selected}
-                  onToggle={toggle}
-                  onCompare={() => setOpenGroupId(group.head.id)}
-                />
-              ))
-            : flat.map((submission) => (
-                <li key={submission.id}>
-                  <FeedCard
-                    submission={submission}
+        <>
+          <ul
+            className={cn(
+              "grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4",
+              // Room for the floating selection bar, which otherwise covers the
+              // last row of cards.
+              visibleSelected.length > 0 && "pb-20",
+            )}
+          >
+            {view === "grouped"
+              ? pagedGroups.visible.map((group) => (
+                  <FeedGroup
+                    key={group.head.id}
+                    head={group.head}
+                    copies={group.children}
                     threshold={campaign.duplicationThreshold}
-                    parentName={
-                      submission.parentId === null
-                        ? null
-                        : (nameById.get(submission.parentId) ?? null)
-                    }
-                    isSelected={selected.has(submission.id)}
-                    onToggle={() => toggle(submission.id)}
-                    // A copy in the flat list has no original pinned above it,
-                    // so it names what it copied on the card itself.
-                    role={isCopy(submission) ? "copy" : "head"}
+                    selected={selected}
+                    onToggle={toggle}
+                    onCompare={() => setOpenGroupId(group.head.id)}
                   />
-                </li>
-              ))}
-        </ul>
+                ))
+              : pagedFlat.visible.map((submission) => (
+                  <li key={submission.id}>
+                    <FeedCard
+                      submission={submission}
+                      threshold={campaign.duplicationThreshold}
+                      parentName={
+                        submission.parentId === null
+                          ? null
+                          : (nameById.get(submission.parentId) ?? null)
+                      }
+                      isSelected={selected.has(submission.id)}
+                      onToggle={() => toggle(submission.id)}
+                      // A copy in the flat list has no original pinned above it,
+                      // so it names what it copied on the card itself.
+                      role={isCopy(submission) ? "copy" : "head"}
+                    />
+                  </li>
+                ))}
+          </ul>
+          {paged.hasMore && (
+            <ListSentinel
+              ref={paged.sentinelRef}
+              shown={paged.shown}
+              total={view === "grouped" ? groups.length : flat.length}
+              noun={view === "grouped" ? "groups" : "videos"}
+            />
+          )}
+        </>
       )}
 
       <DuplicateGroupSheet

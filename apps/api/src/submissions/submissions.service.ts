@@ -15,6 +15,7 @@ import type {
   SubmissionSort,
 } from "./dto/list-submissions-query.dto.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
+import { pageOf, type Page } from "../common/pagination.js";
 import { PrismaService } from "../prisma/prisma.service.js";
 import {
   PLAYBACK_URL_TTL_SECONDS,
@@ -73,21 +74,32 @@ export class SubmissionsService {
     campaignId: string,
     user: AuthenticatedUser,
     query: ListSubmissionsQueryDto = {},
-  ): Promise<VideoSubmissionDto[]> {
-    const rows = await this.prisma.client.videoSubmission.findMany({
-      where: {
-        ...this.scope(campaignId, user),
-        source: query.source ?? SubmissionSource.EDITOR,
-        ...uniquenessFilter(query.uniqueness),
-        ...(query.flagged === undefined ? {} : { overThreshold: query.flagged }),
-      },
-      include: WITH_EDITOR,
-      orderBy: orderFor(query.sort),
-    });
+  ): Promise<Page<VideoSubmissionDto>> {
+    const where: Prisma.VideoSubmissionWhereInput = {
+      ...this.scope(campaignId, user),
+      source: query.source ?? SubmissionSource.EDITOR,
+      ...uniquenessFilter(query.uniqueness),
+      ...(query.flagged === undefined ? {} : { overThreshold: query.flagged }),
+    };
+
+    // One transaction so the count belongs to the same list as the rows: an
+    // upload landing between the two would otherwise report a total the page
+    // numbering never reaches.
+    const [rows, total] = await this.prisma.client.$transaction([
+      this.prisma.client.videoSubmission.findMany({
+        where,
+        include: WITH_EDITOR,
+        orderBy: orderFor(query.sort),
+        skip: query.skip,
+        take: query.take,
+      }),
+      this.prisma.client.videoSubmission.count({ where }),
+    ]);
 
     // Signing is a local HMAC, not a network call, so signing a page of them
     // in parallel costs nothing.
-    return Promise.all(rows.map((row) => this.toDto(row)));
+    const items = await Promise.all(rows.map((row) => this.toDto(row)));
+    return pageOf(items, total, query);
   }
 
   /**
@@ -304,14 +316,29 @@ function orderFor(
         { uniqueness: { sort: "asc", nulls: "last" } },
         { duplicationScore: { sort: "asc", nulls: "last" } },
         { createdAt: "desc" },
+        ...TIEBREAK,
       ];
     case "duplicate":
       return [
         { uniqueness: { sort: "desc", nulls: "last" } },
         { duplicationScore: { sort: "desc", nulls: "last" } },
         { createdAt: "desc" },
+        ...TIEBREAK,
       ];
     default:
-      return [{ createdAt: "desc" }];
+      return [{ createdAt: "desc" }, ...TIEBREAK];
   }
 }
+
+/**
+ * The last word in every ordering above, so that the ordering is total.
+ *
+ * Without it the rows this list is built from tie constantly — a bulk upload
+ * shares a `createdAt` to the millisecond, and an unchecked video has a null
+ * label and a null score — and Postgres is free to return tied rows in a
+ * different order on each query. Under paging that is not cosmetic: the same
+ * video can arrive in two pages while another is never returned at all.
+ */
+const TIEBREAK: Prisma.VideoSubmissionOrderByWithRelationInput[] = [
+  { id: "desc" },
+];

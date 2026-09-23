@@ -22,6 +22,7 @@ import {
   SubmissionResultDialog,
 } from "@/components/campaign-comparison"
 import { EmptyState } from "@/components/empty-state"
+import { ListSentinel } from "@/components/list-sentinel"
 import { MetaDivider } from "@/components/page-header"
 import {
   AlertDialog,
@@ -37,12 +38,14 @@ import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Input } from "@/components/ui/input"
-import { errorMessage, useCollection } from "@/hooks/use-collection"
+import { errorMessage } from "@/hooks/use-collection"
 import { useComparison } from "@/hooks/use-comparison"
 import type { SubmissionCheck } from "@/hooks/use-comparison"
+import { useNearViewport } from "@/hooks/use-near-viewport"
+import { usePagedCollection } from "@/hooks/use-paged-collection"
 import { UploadCancelledError, api } from "@/lib/api"
 import {
-  scrollToSubmission,
+  setSubmissionRevealer,
   submissionAnchorId,
 } from "@/lib/scroll-to-submission"
 import { fileSize, fullDate, relativeTime } from "@/lib/format"
@@ -133,7 +136,20 @@ export function CampaignSubmissions({ campaignId }: CampaignSubmissionsProps) {
   // dashboard can open exactly the videos it stands for.
   const [searchParams, setSearchParams] = useSearchParams()
   const uniqueness = searchParams.get("uniqueness")
-  const { items, isLoading, error, refetch } = useCollection<VideoSubmission>(
+  // Read a page at a time: every card holds a player, and a campaign with four
+  // hundred cuts sent four hundred signed URLs before the first one rendered.
+  // `total` is the campaign's, not what is loaded — the count in the header
+  // and the check below both mean the whole campaign.
+  const {
+    items,
+    total,
+    hasMore,
+    isLoading,
+    error,
+    sentinelRef,
+    refetch,
+    loadMore,
+  } = usePagedCollection<VideoSubmission>(
     uniqueness === null
       ? `/campaigns/${campaignId}/submissions`
       : `/campaigns/${campaignId}/submissions?uniqueness=${encodeURIComponent(uniqueness)}`,
@@ -190,6 +206,33 @@ export function CampaignSubmissions({ campaignId }: CampaignSubmissionsProps) {
   // The XHR outlives this component: unmounting drops the only handle to
   // abortRef, leaving an upload with nothing to show it and no way to stop it.
   useEffect(() => () => abortRef.current?.abort(), [])
+
+  // A "duplicate of X" line can point at a video further down the campaign
+  // than this list has read. Loading pages until it turns up is the difference
+  // between the jump working and it reporting the parent as missing — which is
+  // the wording for a parent belonging to another editor, a different thing.
+  //
+  // Read through refs because the revealer is registered once and called much
+  // later, by which time the list it closed over is several pages old.
+  const loaded = useRef({ items, hasMore, loadMore })
+  loaded.current = { items, hasMore, loadMore }
+  useEffect(() => {
+    setSubmissionRevealer((submissionId) => {
+      const holds = (): boolean =>
+        loaded.current.items.some((item) => item.id === submissionId)
+      if (holds()) return true
+      // Not loaded yet. Only a list with nothing left to read can say the
+      // video is genuinely not here; otherwise keep asking for pages.
+      if (!loaded.current.hasMore) return false
+      void (async () => {
+        while (!holds() && loaded.current.hasMore) {
+          await loaded.current.loadMore()
+        }
+      })()
+      return true
+    })
+    return () => setSubmissionRevealer(null)
+  }, [])
 
   const isAdmin = user?.role === "ADMIN"
   const isUploading = upload !== null
@@ -370,18 +413,18 @@ export function CampaignSubmissions({ campaignId }: CampaignSubmissionsProps) {
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <p className={SECTION_LABEL}>Submissions</p>
-          {items.length > 0 && (
+          {total > 0 && (
             <span className="numeric text-[11px] text-muted-foreground">
-              {items.length}
+              {total}
             </span>
           )}
         </div>
-        {(items.length > 0 || isUploading) && uploadButton}
+        {(total > 0 || isUploading) && uploadButton}
       </div>
 
       {/* A real control, not just a readout: the reader can narrow the list
           here as well as arrive already narrowed from the dashboard. */}
-      {(items.length > 0 || uniqueness !== null) && (
+      {(total > 0 || uniqueness !== null) && (
         <div className="flex flex-wrap items-center gap-1 rounded-md border p-0.5">
           {SUBMISSION_FILTERS.map((option) => {
             const isActive = (uniqueness ?? null) === option.value
@@ -408,7 +451,7 @@ export function CampaignSubmissions({ campaignId }: CampaignSubmissionsProps) {
           })}
           {uniqueness !== null && (
             <span className="numeric ml-auto pr-2 text-[12px] text-muted-foreground">
-              {items.length} shown
+              {total} shown
             </span>
           )}
         </div>
@@ -479,38 +522,48 @@ export function CampaignSubmissions({ campaignId }: CampaignSubmissionsProps) {
       ) : (
         /* A video card is about 320px of content, so one per row left most of
            the width empty and turned a campaign into a long scroll. */
-        <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {items.map((submission) => {
-            const src = playbackSrc(submission)
-            return (
-              <li key={submission.id}>
-                <SubmissionCard
-                  submission={submission}
-                  src={src}
-                  isUnplayable={unplayable.has(src)}
-                  showEditor={isAdmin}
-                  // Admin only. The duplicate check is how the campaign is
-                  // run, not something an editor acts on: they hand work in
-                  // and see how it performed, and the analysis behind who
-                  // gets paid is the admin's to read.
-                  check={
-                    isAdmin
-                      ? comparison.checkFor(submission, parentOf(submission))
-                      : null
-                  }
-                  onOpenResult={
-                    isAdmin ? () => setOpenResult(submission) : undefined
-                  }
-                  onRemove={() => setPendingDelete(submission)}
-                  onRenamed={() => void refetch()}
-                  onPlaybackError={() =>
-                    handlePlaybackError(submission.playbackExpiresAt, src)
-                  }
-                />
-              </li>
-            )
-          })}
-        </ul>
+        <>
+          <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {items.map((submission) => {
+              const src = playbackSrc(submission)
+              return (
+                <li key={submission.id}>
+                  <SubmissionCard
+                    submission={submission}
+                    src={src}
+                    isUnplayable={unplayable.has(src)}
+                    showEditor={isAdmin}
+                    // Admin only. The duplicate check is how the campaign is
+                    // run, not something an editor acts on: they hand work in
+                    // and see how it performed, and the analysis behind who
+                    // gets paid is the admin's to read.
+                    check={
+                      isAdmin
+                        ? comparison.checkFor(submission, parentOf(submission))
+                        : null
+                    }
+                    onOpenResult={
+                      isAdmin ? () => setOpenResult(submission) : undefined
+                    }
+                    onRemove={() => setPendingDelete(submission)}
+                    onRenamed={() => void refetch()}
+                    onPlaybackError={() =>
+                      handlePlaybackError(submission.playbackExpiresAt, src)
+                    }
+                  />
+                </li>
+              )
+            })}
+          </ul>
+          {hasMore && (
+            <ListSentinel
+              ref={sentinelRef}
+              shown={items.length}
+              total={total}
+              noun="videos"
+            />
+          )}
+        </>
       )}
 
       {/* Below the list on purpose: the videos are what this panel is about,
@@ -519,7 +572,7 @@ export function CampaignSubmissions({ campaignId }: CampaignSubmissionsProps) {
       {isAdmin && (
         <CampaignComparison
           state={comparison}
-          canRun={items.length >= 2}
+          canRun={total >= 2}
           openPair={openPair}
           onOpenPair={setOpenPair}
         />
@@ -644,6 +697,9 @@ function SubmissionCard({
 }) {
   const [isRenaming, setRenaming] = useState(false)
   const [draftName, setDraftName] = useState("")
+  // Even preload="metadata" is a request per player, so a panel of cards
+  // fetches only the ones the reader has scrolled near.
+  const [cardRef, isNear] = useNearViewport<HTMLDivElement>()
 
   async function commitRename() {
     const trimmed = draftName.trim()
@@ -663,6 +719,7 @@ function SubmissionCard({
 
   return (
     <div
+      ref={cardRef}
       id={submissionAnchorId(submission.id)}
       className={cn(
         "overflow-hidden rounded-lg border bg-background transition-[box-shadow,border-color] duration-500",
@@ -692,7 +749,7 @@ function SubmissionCard({
             </a>
           </Button>
         </div>
-      ) : (
+      ) : isNear ? (
         /* The browser's own controls, deliberately: an editor checking a cut
            wants scrubbing, volume, fullscreen and picture-in-picture, and every
            one of those is already there. preload="metadata" fetches the header
@@ -704,6 +761,10 @@ function SubmissionCard({
           onError={onPlaybackError}
           className="aspect-video w-full bg-black"
         />
+      ) : (
+        // Holds the card's height so the grid does not reflow underneath the
+        // reader when a video further up finally arrives.
+        <div className="aspect-video w-full bg-muted/30" />
       )}
 
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t px-3 py-2 text-[13px]">

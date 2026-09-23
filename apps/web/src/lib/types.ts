@@ -3,6 +3,21 @@
  * packages/database; `DateTime` columns arrive over JSON as ISO strings.
  */
 
+/**
+ * A page of a list route. Mirrors apps/api/src/common/pagination.ts.
+ *
+ * `total` is the whole filtered list, so a screen can say "24 of 97" and
+ * decide whether an action applies to the campaign rather than to what has
+ * been scrolled to. `nextSkip` is null on the last page — and on a response
+ * to a request that asked for no page at all, which is how a caller that
+ * wants everything gets it.
+ */
+export interface Page<T> {
+  items: T[]
+  total: number
+  nextSkip: number | null
+}
+
 export type Role = "ADMIN" | "EDITOR"
 
 export type CampaignStatus = "ACTIVE" | "INACTIVE"

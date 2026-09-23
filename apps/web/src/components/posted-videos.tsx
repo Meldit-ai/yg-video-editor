@@ -2,8 +2,10 @@ import { useEffect, useState } from "react"
 import { ExternalLinkIcon, EyeIcon, TrendingUpIcon } from "lucide-react"
 
 import { EmptyState } from "@/components/empty-state"
+import { ListSentinel } from "@/components/list-sentinel"
 import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
+import { usePagedList } from "@/hooks/use-paged-list"
 import { api } from "@/lib/api"
 import { compact, shortDate } from "@/lib/format"
 import type { EditorPostedVideo } from "@/lib/types"
@@ -19,8 +21,13 @@ import type { EditorPostedVideo } from "@/lib/types"
  * Lives in its own tab, so an editor with nothing posted yet gets an empty
  * state rather than a blank screen.
  */
+/** Stable identity for "not loaded yet", so paging does not see a new list. */
+const EMPTY_VIDEOS: EditorPostedVideo[] = []
+
 export function PostedVideos({ campaignId }: { campaignId: string }) {
   const [videos, setVideos] = useState<EditorPostedVideo[] | null>(null)
+  // Above the early returns below: a hook cannot be reached conditionally.
+  const paged = usePagedList(videos ?? EMPTY_VIDEOS)
 
   useEffect(() => {
     let cancelled = false
@@ -98,11 +105,19 @@ export function PostedVideos({ campaignId }: { campaignId: string }) {
 
       <Card className="overflow-hidden py-0">
         <CardContent className="divide-y p-0">
-          {videos.map((video) => (
+          {paged.visible.map((video) => (
             <PostedRow key={video.submissionId} video={video} />
           ))}
         </CardContent>
       </Card>
+      {paged.hasMore && (
+        <ListSentinel
+          ref={paged.sentinelRef}
+          shown={paged.shown}
+          total={videos.length}
+          noun="videos"
+        />
+      )}
     </section>
   )
 }

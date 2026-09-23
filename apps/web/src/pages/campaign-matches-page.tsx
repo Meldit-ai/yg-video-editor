@@ -14,12 +14,14 @@ import {
 import { toast } from "sonner"
 
 import { EmptyState } from "@/components/empty-state"
+import { ListSentinel } from "@/components/list-sentinel"
 import { MetaDivider, PageHeader } from "@/components/page-header"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { errorMessage } from "@/hooks/use-collection"
 import { api } from "@/lib/api"
 import { useNearViewport } from "@/hooks/use-near-viewport"
+import { usePagedList } from "@/hooks/use-paged-list"
 import { compact, shortDate } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import { MATCH_GROUP_SORTS, type MatchGroupSort } from "@/lib/types"
@@ -42,6 +44,9 @@ const REEL_BATCH = 500
  * Every reel in a group is an exact match — the group is not a ranking, and
  * there is no weaker member in it.
  */
+/** Stable identity for "not loaded yet", so paging does not see a new list. */
+const EMPTY_GROUPS: MatchGroup[] = []
+
 export function CampaignMatchesPage() {
   const { id } = useParams<{ id: string }>()
   const [campaign, setCampaign] = useState<Campaign | null>(null)
@@ -50,6 +55,10 @@ export function CampaignMatchesPage() {
   // Most viewed first by default: "which edit performed best" is the question
   // this whole pipeline exists to answer.
   const [sort, setSort] = useState<MatchGroupSort>("views")
+  // A group carries a player per account, so a campaign with a hundred matched
+  // edits is a very heavy page. Re-sorting is a different ranking of the same
+  // rows and starts again from the top, which is where the answer now is.
+  const paged = usePagedList(groups ?? EMPTY_GROUPS, { resetKey: sort })
 
   useEffect(() => {
     if (id === undefined) return
@@ -218,11 +227,21 @@ export function CampaignMatchesPage() {
           description="Nothing handed in on this campaign is the same video as one of its Instagram reels. Run a check to look again after new videos arrive."
         />
       ) : (
-        <ul className="flex flex-col gap-2">
-          {groups.map((group) => (
-            <GroupRow key={group.submissionId} group={group} />
-          ))}
-        </ul>
+        <>
+          <ul className="flex flex-col gap-2">
+            {paged.visible.map((group) => (
+              <GroupRow key={group.submissionId} group={group} />
+            ))}
+          </ul>
+          {paged.hasMore && (
+            <ListSentinel
+              ref={paged.sentinelRef}
+              shown={paged.shown}
+              total={groups.length}
+              noun="edits"
+            />
+          )}
+        </>
       )}
     </div>
   )

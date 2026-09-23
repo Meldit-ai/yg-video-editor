@@ -1,6 +1,7 @@
 import { Transform } from "class-transformer";
 import { IsBoolean, IsIn, IsOptional } from "class-validator";
 import { SubmissionSource } from "@repo/database";
+import { PageQueryDto } from "../../common/pagination.js";
 import { toBoolean } from "../../common/transforms.js";
 
 /** Orderings the campaign feed offers. */
@@ -16,7 +17,7 @@ export type SubmissionSort = (typeof SUBMISSION_SORTS)[number];
  * The global ValidationPipe runs with forbidNonWhitelisted, so any other
  * parameter is a 400.
  */
-export class ListSubmissionsQueryDto {
+export class ListSubmissionsQueryDto extends PageQueryDto {
   /**
    * `original` is most-original-first: lowest duplication score at the top,
    * which is what the campaign feed shows. `duplicate` is the reverse, for
