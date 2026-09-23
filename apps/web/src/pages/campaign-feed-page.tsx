@@ -4,6 +4,8 @@ import { ArrowLeftIcon, ClapperboardIcon, RotateCwIcon } from "lucide-react"
 import { motion, useReducedMotion } from "motion/react"
 
 import { CampaignFeed } from "@/components/campaign-feed"
+import { ShareHistory } from "@/components/share-history"
+import { cn } from "@/lib/utils"
 import { EmptyState } from "@/components/empty-state"
 import { MetaDivider, PageHeader } from "@/components/page-header"
 import { CampaignStatusBadge } from "@/components/status-badge"
@@ -20,11 +22,20 @@ import type { Campaign } from "@/lib/types"
  * Split out from the campaign detail page so the feed is a destination an
  * admin can navigate to and link to, rather than a section to scroll past.
  */
+/** The two halves of the feed: the videos, and what was sent from them. */
+const FEED_TABS = [
+  { value: "videos", label: "Videos" },
+  { value: "shares", label: "Sent to vendors" },
+] as const
+
+type FeedTab = (typeof FEED_TABS)[number]["value"]
+
 export function CampaignFeedPage() {
   const { id } = useParams<{ id: string }>()
   const [campaign, setCampaign] = useState<Campaign | null>(null)
   const [isLoading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [tab, setTab] = useState<FeedTab>("videos")
   const [attempt, setAttempt] = useState(0)
   const reduceMotion = useReducedMotion()
 
@@ -116,7 +127,50 @@ export function CampaignFeedPage() {
             }
           />
 
-          <CampaignFeed campaign={campaign} />
+          {/* Tabs rather than stacking: the feed runs to dozens of cards, so
+              a history below it is a history nobody scrolls to. */}
+          <div className="flex w-fit items-center gap-1 rounded-lg border bg-muted/40 p-0.5">
+            {FEED_TABS.map((option) => {
+              const isSelected = tab === option.value
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  aria-pressed={isSelected}
+                  onClick={() => setTab(option.value)}
+                  className={cn(
+                    "relative rounded-md px-3 py-1.5 text-[13px] font-medium transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                    isSelected
+                      ? "text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {isSelected && (
+                    <motion.span
+                      aria-hidden
+                      layoutId="campaign-feed-tab"
+                      transition={
+                        reduceMotion
+                          ? { duration: 0 }
+                          : { type: "spring", stiffness: 520, damping: 42 }
+                      }
+                      className="absolute inset-0 rounded-md border bg-background"
+                    />
+                  )}
+                  <span className="relative">{option.label}</span>
+                </button>
+              )
+            })}
+          </div>
+
+          {/* Both mounted: switching back should not refetch the feed or
+              restart a video someone was part way through. */}
+          <div hidden={tab !== "videos"}>
+            <CampaignFeed campaign={campaign} />
+          </div>
+          <div hidden={tab !== "shares"}>
+            <ShareHistory campaignId={campaign.id} />
+          </div>
         </>
       )}
     </motion.div>

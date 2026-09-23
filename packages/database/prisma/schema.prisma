@@ -61,6 +61,112 @@ model User {
   @@index([active])
 }
 
+/// How a vendor's reply was tied back to what we sent them.
+enum ReplyMatch {
+  /// They used WhatsApp's reply-to, so context.id named the exact message.
+  REPLIED_TO_MESSAGE
+  /// No reply-to, but their number matched exactly one open share.
+  SENDER_NUMBER
+  /// Their number matched several open shares; which one is a guess.
+  AMBIGUOUS_SENDER
+  /// Nothing tied it to a share at all.
+  UNMATCHED
+}
+
+/// Whether a replied post carries one of the videos we actually sent.
+enum DeliveryCheck {
+  /// Not compared yet — the post is not on the tracker, or has no fingerprint.
+  PENDING
+  /// The post is the very same file as one of the videos sent to that vendor.
+  SAME_FILE
+  /// Every frame of the shorter video is in the other: the same footage.
+  SAME_FOOTAGE
+  /// Compared, and it carries none of the videos that vendor was sent.
+  DIFFERENT
+  /// The post exists but has no fingerprint yet, so nothing could be compared.
+  NOT_FINGERPRINTED
+}
+
+/// Whether a replied post link was found on the tracker.
+enum TrackerPresence {
+  /// Not looked up yet.
+  PENDING
+  /// The tracker holds a reel with this shortcode on this campaign.
+  FOUND
+  /// Looked up and absent. Either not scraped yet, or not this campaign's.
+  NOT_FOUND
+}
+
+/// One Instagram post a vendor sent us on WhatsApp.
+///
+/// Stored on arrival, before anything is decided about it: the webhook's job is
+/// to lose nothing. Whether the post exists on the tracker, and whether it
+/// carries one of the videos we sent, are answered afterwards and recorded here
+/// — so a reply is still readable when the tracker is down or the lookup has
+/// not run.
+model VendorReplyPost {
+  id String @id @default(cuid())
+
+  /// Meta's message id for the vendor's reply. Unique per post within it, so a
+  /// webhook redelivery updates rather than duplicates.
+  providerMessageId String
+
+  /// The account that sent it, international digits, no "+".
+  fromNumber String
+
+  /// The post, as identified by its shortcode — the only stable part of an
+  /// Instagram URL. `rawLink` keeps what the vendor actually typed.
+  shortcode String
+  rawLink   String
+  canonicalLink String
+
+  /// The vendor's whole message, so a human can read what they meant.
+  messageBody String
+
+  /// How this was tied back to a share, and to which one. Null share means
+  /// nothing matched — the row is kept regardless.
+  matchedBy ReplyMatch
+  shareId   String?
+  share     VendorShare? @relation(fields: [shareId], references: [id])
+  vendorId  String?
+  vendor    Vendor?      @relation(fields: [vendorId], references: [id])
+  campaignId String?
+  campaign   Campaign?   @relation(fields: [campaignId], references: [id])
+
+  /// Whether the tracker has this post, and the reel row if it does.
+  trackerPresence TrackerPresence @default(PENDING)
+  reelId          String?
+  reel            CampaignReel?   @relation(fields: [reelId], references: [id])
+  trackerCheckedAt DateTime?
+
+  /// Whether the post carries one of the videos that vendor was sent.
+  ///
+  /// The question the whole loop exists to answer: they replied with a link,
+  /// but is it *our* video? Compared only against the videos sent on their own
+  /// share, so a vendor cannot be credited for someone else's delivery.
+  deliveryCheck DeliveryCheck @default(PENDING)
+  /// The video it carries, when one was identified.
+  deliveredSubmissionId String?
+  deliveredSubmission   VideoSubmission? @relation(fields: [deliveredSubmissionId], references: [id])
+  /// Share of the shorter video's frames in common, 0-100. Null for a file
+  /// match, where the bytes are identical and frames add nothing.
+  deliveredFrameShare Float?
+
+  /// When the vendor sent it, per Meta, and when we recorded it.
+  sentAt    DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// One row per post per message: the same link twice in one message is one
+  /// post, and a redelivered webhook must not double it.
+  @@unique([providerMessageId, shortcode])
+  /// The admin read: what came in on a campaign, newest first.
+  @@index([campaignId, createdAt])
+  /// Looking a post up by what the vendor sent.
+  @@index([shortcode])
+  @@index([trackerPresence])
+}
+
 model Campaign {
   id           String         @id @default(cuid())
   title        String
@@ -95,6 +201,9 @@ model Campaign {
 
   /// Vendor shares sent from this campaign's feed.
   vendorShares VendorShare[]
+
+  /// Post links vendors replied with on WhatsApp.
+  vendorReplyPosts VendorReplyPost[]
 
   /// Instagram reels pulled from the tracker, and the runs matching against them.
   reels     CampaignReel[]
@@ -220,6 +329,10 @@ model VideoSubmission {
 
   crossPlatformMatches CrossPlatformMatch[]
   frameSignatures VideoFrameSignature[]
+
+  /// Vendor replies found to carry this video.
+  deliveredInReplies VendorReplyPost[]
+
   @@index([campaignId, active])
   @@index([editorId])
   /// Backs the campaign feed's most-original-first ordering.
@@ -549,6 +662,9 @@ model Vendor {
   /// Shares addressed to this vendor.
   shareRecipients VendorShareRecipient[]
 
+  /// Post links this vendor sent back on WhatsApp.
+  replyPosts VendorReplyPost[]
+
   @@index([active])
 }
 
@@ -586,6 +702,9 @@ model VendorShare {
   updatedAt DateTime @updatedAt
 
   recipients VendorShareRecipient[]
+
+  /// Post links vendors sent back in reply to this share.
+  replyPosts VendorReplyPost[]
 
   @@index([campaignId, active, createdAt])
   @@index([createdById])
@@ -708,6 +827,9 @@ model CampaignReel {
 
   crossPlatformMatches CrossPlatformMatch[]
   frameSignatures VideoFrameSignature[]
+  /// Replies from vendors that pointed at this reel.
+  vendorReplyPosts VendorReplyPost[]
+
   @@unique([campaignId, trackerPostId])
   /// The cross-platform match: find the upload carrying these exact bytes.
   @@index([campaignId, contentHash])

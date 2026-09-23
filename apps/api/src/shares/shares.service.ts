@@ -9,6 +9,7 @@ import {
   type CreateShareDto,
 } from "./dto/create-share.dto.js";
 import type {
+  VendorReplyPostDto,
   ShareableVendorDto,
   VendorShareDto,
   VendorShareRecipientDto,
@@ -71,6 +72,13 @@ const WITH_NAMES = {
     include: { vendor: { select: { name: true } } },
     orderBy: { createdAt: "asc" },
   },
+  replyPosts: {
+    include: {
+      vendor: { select: { name: true } },
+      deliveredSubmission: { select: { fileName: true } },
+    },
+    orderBy: { createdAt: "desc" },
+  },
 } satisfies Prisma.VendorShareInclude;
 
 type ShareRow = Prisma.VendorShareGetPayload<{ include: typeof WITH_NAMES }>;
@@ -117,7 +125,18 @@ export class SharesService {
       include: WITH_NAMES,
       orderBy: { createdAt: "desc" },
     });
-    return rows.map(toDto);
+
+    // One lookup for every video across every share, rather than per share.
+    // `submissionIds` is a plain string array by design — the record of what
+    // was sent has to survive a withdrawal — so the names are joined here.
+    const ids = [...new Set(rows.flatMap((row) => row.submissionIds))];
+    const named = await this.prisma.client.videoSubmission.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, fileName: true },
+    });
+    const fileNames = new Map(named.map((one) => [one.id, one.fileName]));
+
+    return rows.map((row) => toDto(row, fileNames));
   }
 
   /**
@@ -446,7 +465,16 @@ export function composeMessage(
   return typed.length === 0 ? list : `${typed}\n\n${list}`;
 }
 
-function toDto(row: ShareRow): VendorShareDto {
+/**
+ * @param fileNames Names for the shared videos, by submission id. A withdrawn
+ *   video keeps its id on the share with no row to look it up in, so a missing
+ *   entry is expected and reads as "no longer on the campaign" rather than as
+ *   an error.
+ */
+function toDto(
+  row: ShareRow,
+  fileNames: ReadonlyMap<string, string> = new Map(),
+): VendorShareDto {
   return {
     id: row.id,
     campaignId: row.campaignId,
@@ -454,6 +482,10 @@ function toDto(row: ShareRow): VendorShareDto {
     createdByName: row.createdBy.name,
     messageBody: row.messageBody,
     submissionIds: row.submissionIds,
+    videos: row.submissionIds.map((submissionId) => ({
+      submissionId,
+      fileName: fileNames.get(submissionId) ?? null,
+    })),
     createdAt: row.createdAt,
     recipients: row.recipients.map(
       (recipient): VendorShareRecipientDto => ({
@@ -465,6 +497,25 @@ function toDto(row: ShareRow): VendorShareDto {
         usedTemplate: recipient.usedTemplate,
         errorMessage: recipient.errorMessage,
         sentAt: recipient.sentAt,
+      }),
+    ),
+    replies: row.replyPosts.map(
+      (reply): VendorReplyPostDto => ({
+        id: reply.id,
+        vendorId: reply.vendorId,
+        vendorName: reply.vendor?.name ?? null,
+        fromNumber: reply.fromNumber,
+        messageBody: reply.messageBody,
+        shortcode: reply.shortcode,
+        canonicalLink: reply.canonicalLink,
+        matchedBy: reply.matchedBy,
+        onTracker: reply.trackerPresence,
+        delivery: reply.deliveryCheck,
+        deliveredSubmissionId: reply.deliveredSubmissionId,
+        deliveredFileName: reply.deliveredSubmission?.fileName ?? null,
+        deliveredFrameShare: reply.deliveredFrameShare,
+        sentAt: reply.sentAt,
+        createdAt: reply.createdAt,
       }),
     ),
   };

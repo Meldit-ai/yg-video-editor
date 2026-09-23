@@ -715,3 +715,62 @@ export interface EditorPostedVideo {
     totalPosts: number
   }
 }
+
+/** Mirrors apps/api/src/shares/shares.types.ts. */
+export type ReplyMatchedBy =
+  | "REPLIED_TO_MESSAGE"
+  | "SENDER_NUMBER"
+  | "AMBIGUOUS_SENDER"
+  | "UNMATCHED"
+
+export type TrackerPresence = "PENDING" | "FOUND" | "NOT_FOUND"
+
+export type DeliveryCheck =
+  | "PENDING"
+  | "SAME_FILE"
+  | "SAME_FOOTAGE"
+  | "DIFFERENT"
+  | "NOT_FINGERPRINTED"
+
+export interface VendorReplyPost {
+  id: string
+  vendorId: string | null
+  vendorName: string | null
+  fromNumber: string
+  messageBody: string
+  shortcode: string
+  canonicalLink: string
+  matchedBy: ReplyMatchedBy
+  onTracker: TrackerPresence
+  delivery: DeliveryCheck
+  deliveredSubmissionId: string | null
+  deliveredFileName: string | null
+  deliveredFrameShare: number | null
+  sentAt: string | null
+  createdAt: string
+}
+
+export interface VendorShareRecipientRow {
+  id: string
+  vendorId: string
+  vendorName: string
+  waNumber: string | null
+  status: "PENDING" | "SENT" | "FAILED" | "UNREACHABLE"
+  usedTemplate: boolean
+  errorMessage: string | null
+  sentAt: string | null
+}
+
+export interface VendorShareRow {
+  id: string
+  campaignId: string
+  createdById: string
+  createdByName: string
+  messageBody: string
+  submissionIds: string[]
+  /** The videos that went out, named. Null name means since withdrawn. */
+  videos: { submissionId: string; fileName: string | null }[]
+  createdAt: string
+  recipients: VendorShareRecipientRow[]
+  replies: VendorReplyPost[]
+}
