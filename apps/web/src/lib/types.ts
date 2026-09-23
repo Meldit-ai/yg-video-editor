@@ -671,17 +671,6 @@ export interface AdminDashboardStats {
     /** Unique as a share of what was checked. Null when nothing has been. */
     originalRate: number | null
   }[]
-  repetition: {
-    clusters: number
-    repeatedVideos: number
-    worst: {
-      submissionId: string
-      campaignId: string
-      campaignTitle: string
-      fileName: string
-      copies: number
-    } | null
-  }
   health: {
     campaignId: string
     campaignTitle: string
@@ -764,6 +753,7 @@ export interface VendorShareRecipientRow {
 export interface VendorShareRow {
   id: string
   campaignId: string
+  campaignTitle: string
   createdById: string
   createdByName: string
   messageBody: string

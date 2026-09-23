@@ -26,14 +26,23 @@ import { cn } from "@/lib/utils"
  * reply. Both halves are here: the videos that went out with the vendors they
  * went to, and each post link that came back with what we made of it.
  */
-export function ShareHistory({ campaignId }: { campaignId: string }) {
+export function ShareHistory({
+  campaignId,
+}: {
+  /** Omit to list every campaign's shares, for the Vendors page. */
+  campaignId?: string
+}) {
   const [shares, setShares] = useState<VendorShareRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
     api
-      .get<VendorShareRow[]>(`/campaigns/${campaignId}/shares`)
+      .get<VendorShareRow[]>(
+        campaignId === undefined
+          ? "/shares"
+          : `/campaigns/${campaignId}/shares`,
+      )
       .then((data) => {
         if (!cancelled) setShares(data)
       })
@@ -89,7 +98,7 @@ export function ShareHistory({ campaignId }: { campaignId: string }) {
       <ul className="flex flex-col gap-2">
         {shares.map((share) => (
           <li key={share.id}>
-            <ShareRow share={share} />
+            <ShareRow share={share} showCampaign={campaignId === undefined} />
           </li>
         ))}
       </ul>
@@ -97,7 +106,13 @@ export function ShareHistory({ campaignId }: { campaignId: string }) {
   )
 }
 
-function ShareRow({ share }: { share: VendorShareRow }) {
+function ShareRow({
+  share,
+  showCampaign,
+}: {
+  share: VendorShareRow
+  showCampaign: boolean
+}) {
   const [isOpen, setOpen] = useState(false)
   const failed = share.recipients.filter(
     (one) => one.status === "FAILED" || one.status === "UNREACHABLE",
@@ -126,6 +141,13 @@ function ShareRow({ share }: { share: VendorShareRow }) {
           {share.recipients.map((one) => one.vendorName).join(", ") ||
             "No recipients"}
         </span>
+
+        {/* Which campaign, when the list is not already one campaign's. */}
+        {showCampaign && (
+          <span className="shrink-0 truncate text-[12px] text-muted-foreground">
+            {share.campaignTitle}
+          </span>
+        )}
 
         <span className="numeric shrink-0 text-[12px] text-muted-foreground">
           {share.videos.length === 1

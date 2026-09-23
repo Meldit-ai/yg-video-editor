@@ -67,6 +67,9 @@ const OUTSIDE_WINDOW_CODES = new Set([131047, 131051, 132000, 470]);
 const MAX_ATTEMPTS = 3;
 
 const WITH_NAMES = {
+  // The campaign's name, because a list spanning campaigns cannot say which
+  // one a share belongs to from its id.
+  campaign: { select: { title: true } },
   createdBy: { select: { name: true } },
   recipients: {
     include: { vendor: { select: { name: true } } },
@@ -118,10 +121,19 @@ export class SharesService {
     }));
   }
 
-  /** Every share sent from a campaign, newest first. */
-  async findAll(campaignId: string): Promise<VendorShareDto[]> {
+  /**
+   * Shares sent, newest first.
+   *
+   * `campaignId` narrows it to one campaign; omitted, it answers across every
+   * campaign — which is how an admin asks "what have we sent, and to whom"
+   * without already knowing which campaign to look in.
+   */
+  async findAll(campaignId?: string): Promise<VendorShareDto[]> {
     const rows = await this.prisma.client.vendorShare.findMany({
-      where: { campaignId, active: true },
+      where: {
+        active: true,
+        ...(campaignId === undefined ? {} : { campaignId }),
+      },
       include: WITH_NAMES,
       orderBy: { createdAt: "desc" },
     });
@@ -478,6 +490,7 @@ function toDto(
   return {
     id: row.id,
     campaignId: row.campaignId,
+    campaignTitle: row.campaign.title,
     createdById: row.createdById,
     createdByName: row.createdBy.name,
     messageBody: row.messageBody,

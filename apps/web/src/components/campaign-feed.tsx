@@ -171,6 +171,24 @@ export function CampaignFeed({ campaign }: { campaign: Campaign }) {
 
   const checkedCount = items.filter((item) => item.uniqueness !== null).length
 
+  // Repeated work on this campaign, from the grouping already computed above.
+  // A count of duplicates reads like that many problems; the number of cuts
+  // handed in more than once is the number of conversations worth having.
+  const repeated = useMemo(() => {
+    const clusters = groups.filter((group) => group.children.length > 0)
+    return {
+      clusters: clusters.length,
+      videos: clusters.reduce((sum, group) => sum + group.children.length, 0),
+      worst: clusters.reduce<(typeof clusters)[number] | null>(
+        (worst, group) =>
+          worst === null || group.children.length > worst.children.length
+            ? group
+            : worst,
+        null,
+      ),
+    }
+  }, [groups])
+
   // One per view, because the two arrange the same videos into different rows
   // and paging one by the other's position would cut a list short. Both keys
   // carry the sort and the filter: those really are a different list, and the
@@ -277,6 +295,33 @@ export function CampaignFeed({ campaign }: { campaign: Campaign }) {
               : `${checkedCount} of ${items.length} checked against ${campaign.duplicationThreshold}%`}
         </span>
       </div>
+
+      {/* Repeated work on this campaign, named. A filename and a count can
+          start a conversation with an editor; a percentage cannot. Lives here
+          rather than on the dashboard because it is about this campaign. */}
+      {!isLoading && repeated.clusters > 0 && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-dashed px-3 py-2 text-[12px]">
+          <CopyIcon className="size-3.5 shrink-0 text-muted-foreground" />
+          <span>
+            <strong className="font-medium">
+              {repeated.clusters === 1
+                ? "1 cut"
+                : `${repeated.clusters} cuts`}
+            </strong>{" "}
+            handed in more than once, {repeated.videos} extra{" "}
+            {repeated.videos === 1 ? "copy" : "copies"} between them
+          </span>
+          {repeated.worst !== null && (
+            <span
+              className="min-w-0 truncate text-muted-foreground"
+              title={repeated.worst.head.fileName}
+            >
+              worst: {repeated.worst.head.fileName} ×
+              {repeated.worst.children.length + 1}
+            </span>
+          )}
+        </div>
+      )}
 
       {isLoading ? (
         <FeedSkeleton />

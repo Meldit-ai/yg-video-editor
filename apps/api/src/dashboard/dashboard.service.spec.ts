@@ -237,10 +237,6 @@ describe("DashboardService.adminStats", () => {
     matched?: Array<{ submissionId: string }>;
     /** Rate card for the mocked editor, behind the spend figures. */
     rateCard?: number | null;
-    clusters?: Array<{
-      topMatchSubmissionId: string | null;
-      _count: { _all: number };
-    }>;
     lastRun?: { status: string; createdAt: Date } | null;
   }) {
     // Order matters: the service issues the campaign-label grouping, then the
@@ -251,7 +247,6 @@ describe("DashboardService.adminStats", () => {
       .fn()
       .mockResolvedValueOnce(options.byLabel ?? [])
       .mockResolvedValueOnce(options.byEditor ?? [])
-      .mockResolvedValueOnce(options.clusters ?? [])
       .mockResolvedValueOnce(options.editorsByCampaign ?? [])
       // Payable videos per editor per campaign.
       .mockResolvedValueOnce(
@@ -401,34 +396,7 @@ describe("DashboardService.adminStats", () => {
     expect(result.health[0]!.lastRunAt).toBeNull();
   });
 
-  it("groups duplicates into clusters, worst first", async () => {
-    // "64 duplicates" is a tally; "one cut was handed in 15 times" is a
-    // conversation with an editor.
-    const { service } = adminServiceWith({
-      clusters: [
-        { topMatchSubmissionId: "s1", _count: { _all: 15 } },
-        { topMatchSubmissionId: "s2", _count: { _all: 3 } },
-      ],
-    });
-    const result = await service.adminStats();
-    expect(result.repetition.clusters).toBe(2);
-    expect(result.repetition.repeatedVideos).toBe(18);
-    expect(result.repetition.worst).toMatchObject({
-      submissionId: "s1",
-      fileName: "final-cut.mp4",
-      copies: 15,
-    });
-  });
 
-  it("ignores a duplicate with no recorded parent", async () => {
-    // Labelled before the parent was stored; it is not a cluster of its own.
-    const { service } = adminServiceWith({
-      clusters: [{ topMatchSubmissionId: null, _count: { _all: 4 } }],
-    });
-    const result = await service.adminStats();
-    expect(result.repetition.clusters).toBe(0);
-    expect(result.repetition.worst).toBeNull();
-  });
 
   it("prices a campaign at each editor's own rate", async () => {
     // Two editors on one campaign are usually on different rates, so a single

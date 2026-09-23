@@ -27,6 +27,8 @@ export interface VendorShareRecipientDto {
 export interface VendorShareDto {
   id: string;
   campaignId: string;
+  /** Named, so a list spanning campaigns can say which one this belongs to. */
+  campaignTitle: string;
   createdById: string;
   createdByName: string;
   /** What the admin typed, before the links were appended. */

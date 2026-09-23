@@ -127,28 +127,6 @@ export interface AdminDashboardStats {
   }[];
 
   /**
-   * Repeated work: how many distinct cuts were handed in more than once, and
-   * the worst offender.
-   *
-   * The number an admin can act on. "64 duplicates" is a tally; "one cut was
-   * handed in 15 times" is a conversation with an editor.
-   */
-  repetition: {
-    /** Cuts that came in more than once. */
-    clusters: number;
-    /** Videos sitting inside those clusters — the repeated work itself. */
-    repeatedVideos: number;
-    /** The most-copied cut, if there is one. */
-    worst: {
-      submissionId: string;
-      campaignId: string;
-      campaignTitle: string;
-      fileName: string;
-      copies: number;
-    } | null;
-  };
-
-  /**
    * What is wrong *now*, per campaign — not a lifetime tally.
    *
    * Counting every failure ever recorded showed 19 failed runs on a system

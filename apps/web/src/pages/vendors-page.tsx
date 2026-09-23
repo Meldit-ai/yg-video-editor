@@ -52,9 +52,18 @@ import { api } from "@/lib/api"
 import { fullDate, shortDate } from "@/lib/format"
 import { CHORD_WINDOW_MS, hasOpenOverlay, isTypingTarget } from "@/lib/keyboard"
 import type { Vendor } from "@/lib/types"
+import { ShareHistory } from "@/components/share-history"
 import { cn } from "@/lib/utils"
 
 type VendorFilter = "all" | "active" | "inactive"
+
+/** The two halves of this page: who the vendors are, and what went to them. */
+const VENDOR_TABS = [
+  { value: "vendors", label: "Vendors" },
+  { value: "sent", label: "Sent to vendors" },
+] as const
+
+type VendorTab = (typeof VENDOR_TABS)[number]["value"]
 
 const FILTERS: readonly { value: VendorFilter; label: string }[] = [
   { value: "all", label: "All" },
@@ -196,6 +205,7 @@ function IdCell({ id }: { id: string }) {
 
 export function VendorsPage() {
   const [filter, setFilter] = useState<VendorFilter>("all")
+  const [tab, setTab] = useState<VendorTab>("vendors")
   const { items, isLoading, error, refetch } = useCollection<Vendor>(
     collectionPath(filter),
   )
@@ -376,7 +386,49 @@ export function VendorsPage() {
         }
       />
 
-      <div className="panel-sheen overflow-hidden rounded-lg border bg-card">
+      {/* Two things an admin does with vendors: manage who they are, and see
+          what was sent to them. The second used to be three clicks inside a
+          campaign, which meant knowing the answer before you could look. */}
+      <div className="flex w-fit items-center gap-1 rounded-lg border bg-muted/40 p-0.5">
+        {VENDOR_TABS.map((option) => {
+          const isSelected = tab === option.value
+          return (
+            <button
+              key={option.value}
+              type="button"
+              aria-pressed={isSelected}
+              onClick={() => setTab(option.value)}
+              className={cn(
+                "relative rounded-md px-3 py-1.5 text-[13px] font-medium transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                isSelected
+                  ? "text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {isSelected && (
+                <motion.span
+                  aria-hidden
+                  layoutId="vendors-tab"
+                  transition={
+                    reduceMotion
+                      ? { duration: 0 }
+                      : { type: "spring", stiffness: 520, damping: 42 }
+                  }
+                  className="absolute inset-0 rounded-md border bg-background"
+                />
+              )}
+              <span className="relative">{option.label}</span>
+            </button>
+          )
+        })}
+      </div>
+
+      {tab === "sent" && <ShareHistory />}
+
+      <div
+        hidden={tab !== "vendors"}
+        className="panel-sheen overflow-hidden rounded-lg border bg-card"
+      >
         <div className="flex flex-wrap items-center gap-3 border-b px-2 py-2">
           <div className="relative w-full max-w-xs">
             <SearchIcon
