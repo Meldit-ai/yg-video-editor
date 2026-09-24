@@ -1,11 +1,11 @@
-import type { Server } from "node:http"
-import path from "node:path"
-import { fileURLToPath } from "node:url"
-import tailwindcss from "@tailwindcss/vite"
-import react from "@vitejs/plugin-react"
-import { defineConfig, type ViteDevServer } from "vite"
+import type { Server } from "node:http";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import tailwindcss from "@tailwindcss/vite";
+import react from "@vitejs/plugin-react";
+import { defineConfig, type ViteDevServer } from "vite";
 
-const dirname = path.dirname(fileURLToPath(import.meta.url))
+const dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * Node's http server gives every request 5 minutes, measured from its first
@@ -20,10 +20,10 @@ const raiseUploadTimeout = {
   configureServer(server: ViteDevServer) {
     // Absent in middleware mode, where the host app owns the server. Vite
     // types it widely enough to include an http2 server, which this never is.
-    const httpServer = server.httpServer as Server | null
-    if (httpServer) httpServer.requestTimeout = 30 * 60 * 1000
+    const httpServer = server.httpServer as Server | null;
+    if (httpServer) httpServer.requestTimeout = 30 * 60 * 1000;
   },
-}
+};
 
 export default defineConfig({
   plugins: [react(), tailwindcss(), raiseUploadTimeout],
@@ -44,4 +44,7 @@ export default defineConfig({
       },
     },
   },
-})
+  preview: {
+    port: 8701,
+  },
+});
