@@ -46,5 +46,8 @@ export default defineConfig({
   },
   preview: {
     port: 8701,
+    strictPort: true,
+    host: "127.0.0.1",
+    allowedHosts: ["video-editor.meldit.ai"],
   },
 });
