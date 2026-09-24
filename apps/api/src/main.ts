@@ -21,7 +21,7 @@ async function bootstrap(): Promise<void> {
 
   app.enableShutdownHooks();
   app.setGlobalPrefix("api");
-  app.enableCors({ origin: "http://localhost:8701" });
+  app.enableCors({ origin: ["http://localhost:8701", "https://video-editor.meldit.ai"] });
 
   app.useGlobalPipes(
     new ValidationPipe({
